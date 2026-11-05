@@ -1,0 +1,10 @@
+# never publish data – only program files belong here
+*.db
+*.db-journal
+*.sqlite
+dev/
+data/
+files/
+backups/
+*.xlsx
+*.accdb
