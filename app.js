@@ -45,9 +45,11 @@ const tenantName = (t) => {
   if (t.co_tenant) n = n ? `${n} and ${t.co_tenant}` : t.co_tenant;
   return t.company ? (n ? `${t.company} (${n})` : t.company) : n;
 };
-const buildingLabel = (b) => (b ? `${b.code}${b.name ? " – " + b.name : ""}` : "–");
-const buildingShort = (b) => (b ? `${b.code} · ${b.street || ""} ${b.house_no || ""}`.trim() : "–");
-const unitLabel = (u, withBuilding = true) => { if (!u) return "–"; const b = byId("buildings", u.building_id); return (withBuilding && b ? b.code + " · " : "") + u.code + (u.unit_type ? ` (${u.unit_type})` : ""); };
+const buildingName = (b) => (b ? (b.name || `${b.street || ""} ${b.house_no || ""}`.trim() || b.code) : "–");
+const buildingLabel = buildingName;
+const buildingShort = buildingName;
+const unitLabel = (u, withBuilding = true) => { if (!u) return "–"; const b = byId("buildings", u.building_id); return (withBuilding && b ? buildingName(b) + " · " : "") + u.code + (u.unit_type ? ` (${u.unit_type})` : ""); };
+const lastReading = (m) => db.meter_readings.filter((r) => r.meter_id === m.id).reduce((a, r) => (!a || r.reading_date > a.reading_date ? r : a), null);
 const leaseLabel = (l) => (l ? `${unitLabel(byId("units", l.unit_id))} – ${tenantName(byId("tenants", l.tenant_id))}` : "–");
 const leaseShort = (l) => (l ? `${tenantName(byId("tenants", l.tenant_id))} · ${byId("units", l.unit_id)?.code || "?"}` : "–");
 const RENTABLE = ["Apartment", "Commercial", "House"];
@@ -96,6 +98,7 @@ const ICON_PATHS = {
   x: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
   arrowLeft: '<path d="m12 19-7-7 7-7"/><path d="M19 12H5"/>',
   arrowRight: '<path d="M5 12h14"/><path d="m12 5 7 7-7 7"/>',
+  imageX: '<path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7"/><circle cx="8.5" cy="9.5" r="1.5"/><path d="m21 16-4-4-9 9"/><path d="m16 3 5 5M21 3l-5 5"/>',
   trash: '<path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><path d="M10 11v6M14 11v6"/>',
   check: '<path d="M20 6 9 17l-5-5"/>',
   camera: '<path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/>',
@@ -118,6 +121,22 @@ const ICON_PATHS = {
   smartphone: '<rect x="5" y="2" width="14" height="20" rx="2"/><path d="M12 18h.01"/>',
 };
 const icon = (name, size = 20) => `<svg class="ic" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON_PATHS[name] || ""}</svg>`;
+
+// ---------------------------------------------------------------- in-app confirm (native confirm() is blocked in some browsers / web-app mode)
+function askConfirm(message, okLabel = "Delete") {
+  return new Promise((resolve) => {
+    const wrap = document.createElement("div");
+    wrap.className = "confirm-backdrop";
+    wrap.innerHTML = `<div class="confirm-box" role="alertdialog" aria-modal="true"><p></p><div class="confirm-actions"><button class="btn" data-c="0">Cancel</button><button class="btn primary${/delete|overwrite|discard/i.test(message) ? " danger-fill" : ""}" data-c="1">${esc(/delete/i.test(message) ? okLabel : "OK")}</button></div></div>`;
+    wrap.querySelector("p").textContent = message;
+    const done = (v) => { wrap.remove(); document.removeEventListener("keydown", onKey, true); resolve(v); };
+    const onKey = (e) => { if (e.key === "Escape") { e.stopPropagation(); done(false); } else if (e.key === "Enter") { e.preventDefault(); done(true); } };
+    wrap.onclick = (e) => { const b = e.target.closest("[data-c]"); if (b) done(b.dataset.c === "1"); else if (e.target === wrap) done(false); };
+    document.addEventListener("keydown", onKey, true);
+    document.body.appendChild(wrap);
+    wrap.querySelector('[data-c="1"]').focus();
+  });
+}
 
 // ---------------------------------------------------------------- attachments
 const ATTACHABLE = ["buildings", "units", "meters", "tenants", "leases", "settlements", "payments"];
@@ -164,7 +183,7 @@ function attachmentTiles(list, deletable = true) {
   return list.map((a) => `<div class="att">
       <a ${attHref(a)} target="_blank" rel="noopener" title="${esc(a.filename)}">${isImage(a) ? `<img ${attSrc(a)} loading="lazy" alt="">` : `<span class="att-file">${icon("file", 28)}<span>${esc(a.filename.split(".").pop().toUpperCase())}</span></span>`}</a>
       <div class="att-name" title="${esc(a.filename)}">${esc(a.caption || a.filename.replace(/^\d{8}-\d{6}_[0-9a-f]{4}_/, ""))}</div>
-      ${deletable ? `<button class="att-del" data-del-att="${a.id}" title="Delete file">${icon("trash", 16)}</button>` : ""}</div>`).join("");
+      ${deletable ? `<button class="att-del" data-del-att="${a.id}" title="Delete ${isImage(a) ? "photo" : "file"}">${icon(isImage(a) ? "imageX" : "x", 16)}</button>` : ""}</div>`).join("");
 }
 function attachmentsBlock(entity, record) {
   const list = attachmentsOf(entity, record.id);
@@ -190,7 +209,7 @@ function bindAttachments(root, after) {
   });
   root.querySelectorAll("[data-del-att]").forEach((b) => (b.onclick = async (e) => {
     e.preventDefault(); e.stopPropagation();
-    if (!confirm("Delete this file?")) return;
+    if (!await askConfirm("Delete this file?")) return;
     try { await api("DELETE", `attachments/${b.dataset.delAtt}`); await loadAll(); toast("File deleted"); after(); }
     catch (err) { toast(err.message, true); }
   }));
@@ -373,8 +392,7 @@ const ENTITIES = {
       { key: "notes", label: "Notes", type: "textarea", full: true },
     ],
     columns: [
-      { label: "Code", value: (r) => `<strong>${esc(r.code)}</strong>` },
-      { label: "Name", value: (r) => esc(r.name || "") },
+      { label: "Name", value: (r) => `<strong>${esc(buildingName(r))}</strong>` },
       { label: "Address", value: (r) => esc(`${r.street || ""} ${r.house_no || ""}, ${r.zip || ""} ${r.city || ""}`) },
       { label: "Year built", value: (r) => esc(r.year_built ?? ""), num: true },
       { label: "Units", value: (r) => db.units.filter((u) => u.building_id === r.id).length, num: true },
@@ -406,7 +424,6 @@ const ENTITIES = {
       { key: "notes", label: "Notes", type: "textarea", full: true },
     ],
     columns: [
-      { label: "Building", value: (r) => esc(byId("buildings", r.building_id)?.code) },
       { label: "Unit", value: (r) => `<strong>${esc(r.code)}</strong>` },
       { label: "Belongs to", value: (r) => (r.parent_unit_id ? esc(byId("units", r.parent_unit_id)?.code) : "") },
       { label: "Type", value: (r) => esc(r.unit_type) },
@@ -447,12 +464,13 @@ const ENTITIES = {
       { key: "notes", label: "Notes", type: "textarea", full: true },
     ],
     columns: [
-      { label: "Building", value: (r) => esc(byId("buildings", r.building_id)?.code) },
-      { label: "Assigned to", value: (r) => `<span class="dot" style="background:${unitColor(r.building_id, r.unit_id)}"></span> ` + (r.unit_id ? esc(byId("units", r.unit_id)?.code) : '<span class="muted">Common</span>') },
+      { label: "Assigned to", hideMobile: true, value: (r) => `<span class="dot" style="background:${unitColor(r.building_id, r.unit_id)}"></span> ` + (r.unit_id ? esc(byId("units", r.unit_id)?.code) : '<span class="muted">Common</span>') },
       { label: "Meter type", value: (r) => esc(r.meter_type) },
       { label: "Number", value: (r) => (r.number ? `<strong>${esc(r.number)}</strong>` : '<span class="pill free">missing</span>') },
       { label: "Unit", value: (r) => esc(r.measure_unit || "") },
       { label: "Location", value: (r) => esc(r.location || "") },
+      { label: "Last reading", value: (r) => { const l = lastReading(r); return l ? fmtDate(l.reading_date) : '<span class="muted">–</span>'; } },
+      { label: "Photo", value: (r) => { const l = lastReading(r); return l && attachmentsOf("meter_readings", l.id).length ? `<span class="photo-tick" title="Photo of the last reading available">${icon("check", 16)}</span>` : ""; }, center: true },
       { label: "Status", value: (r) => (r.active ? '<span class="pill ok">active</span>' : '<span class="pill grey">inactive</span>') },
     ],
     related: (r) => [readingsBlock(r)],
@@ -479,7 +497,7 @@ const ENTITIES = {
       { label: "Name", value: (r) => `<strong>${esc(tenantName(r))}</strong>` },
       { label: "Phone", value: (r) => esc(r.phone || "") },
       { label: "Email", value: (r) => esc(r.email || "") },
-      { label: "Current unit", value: (r) => esc(db.leases.filter((l) => l.tenant_id === r.id && leaseActiveOn(l, today())).map((l) => unitLabel(byId("units", l.unit_id))).join(", ") || "–") },
+      { label: "Current unit", value: (r) => esc(db.leases.filter((l) => l.tenant_id === r.id && leaseActiveOn(l, today())).map((l) => unitLabel(byId("units", l.unit_id), false)).join(", ") || "–") },
     ],
     related: (r) => [
       relatedBlock("Leases", "leases", db.leases.filter((l) => l.tenant_id === r.id),
@@ -508,7 +526,7 @@ const ENTITIES = {
       { key: "notes", label: "Notes", type: "textarea", full: true },
     ],
     columns: [
-      { label: "Unit", value: (r) => esc(unitLabel(byId("units", r.unit_id))) },
+      { label: "Unit", value: (r) => esc(unitLabel(byId("units", r.unit_id), false)) },
       { label: "Tenant", value: (r) => `<strong>${esc(tenantName(byId("tenants", r.tenant_id)))}</strong>` },
       { label: "Start", value: (r) => fmtDate(r.start_date) },
       { label: "End", value: (r) => fmtDate(r.end_date) },
@@ -729,7 +747,7 @@ function renderEntityList(key) {
     const q = st.q.trim().toLowerCase();
     const rows = db[key].filter((r) => !q || ent.columns.map((c) => String(c.value(r)).replace(/<[^>]+>/g, "")).join(" ").toLowerCase().includes(q));
     if (UNIT_OF[key]) rows.sort((a, b) => cmpUnits(UNIT_OF[key](a), UNIT_OF[key](b)) || (a.meter_type || "").localeCompare(b.meter_type || "") || (b.period_year || 0) - (a.period_year || 0));
-    const rowHtml = (r) => `<tr class="clickable" data-id="${r.id}">${ent.columns.map((c) => `<td class="${c.num ? "num" : ""}">${c.value(r)}</td>`).join("")}</tr>`;
+    const rowHtml = (r) => `<tr class="clickable" data-id="${r.id}">${ent.columns.map((c) => `<td class="${c.num ? "num" : c.center ? "center" : ""}${c.hideMobile ? " hm" : ""}">${c.value(r)}</td>`).join("")}</tr>`;
     const groupOf = GROUP_BY[key];
     let body;
     if (groupOf) {
@@ -755,8 +773,8 @@ function renderEntityList(key) {
     $("#view").innerHTML = `
       <div class="card">
         <div class="table-wrap">
-          ${rows.length ? `<table>
-            <thead><tr>${ent.columns.map((c) => `<th class="${c.num ? "num" : ""}">${esc(c.label)}</th>`).join("")}</tr></thead>
+          ${rows.length ? `<table class="fit">
+            <thead><tr>${ent.columns.map((c) => `<th class="${c.num ? "num" : c.center ? "center" : ""}${c.hideMobile ? " hm" : ""}">${esc(c.label)}</th>`).join("")}</tr></thead>
             <tbody>${body}</tbody>
           </table>` : `<div class="empty">${db[key].length ? "No matches." : `No ${esc(ent.title.toLowerCase())} yet.<br><br><button class="btn primary" id="emptyNew">${icon("plus", 18)} ${esc(ent.newLabel)}</button>`}</div>`}
         </div>
@@ -863,9 +881,12 @@ function drawForm() {
   async function save() {
     try {
       const payload = readForm(ent);
+      const pending = key === "meters" ? pendingReading() : null;
+      if (pending && pending.error) return showFormError(pending.error);
       const saved = record ? await api("PUT", `${key}/${record.id}`, payload) : await api("POST", key, payload);
+      if (pending) await storeReading(pending);
       await loadAll();
-      toast(`${ent.singular} saved`);
+      toast(pending ? (pending.photo ? "Meter, reading and photo saved" : "Meter and reading saved") : `${ent.singular} saved`);
       render();
       if (drawerStack.length > 1) { drawerStack.pop(); drawForm(); }
       else if (key === "payments") closeDrawer();
@@ -876,7 +897,7 @@ function drawForm() {
   $("#cancelBtn").onclick = closeDrawer;
   if ($("#backBtn")) $("#backBtn").onclick = drawerBack;
   if ($("#delBtn")) $("#delBtn").onclick = async () => {
-    if (!confirm(`Really delete ${ent.singular.toLowerCase()} “${ent.display(record)}”?`)) return;
+    if (!await askConfirm(`Really delete ${ent.singular.toLowerCase()} “${ent.display(record)}”?`)) return;
     try {
       await api("DELETE", `${key}/${record.id}`);
       await loadAll(); toast(`${ent.singular} deleted`); render(); drawerBack();
@@ -926,6 +947,21 @@ function readingsBlock(meter) {
     </div>`;
 }
 
+/** reading typed into the meter panel but not yet stored (null = nothing entered) */
+function pendingReading() {
+  const add = $("#rd_add"); if (!add) return null;
+  const value = $("#rd_value").value.trim(), photo = $("#rd_photo").files[0] || null;
+  if (!value && !photo) return null;
+  if (!value) return { error: "Please enter the meter reading for the chosen photo." };
+  if (!$("#rd_date").value) return { error: "Please enter the reading date." };
+  return { meter_id: Number(add.dataset.meter), reading_date: $("#rd_date").value, value: value.replace(/\s/g, "").replace(",", "."), reading_type: $("#rd_type").value, photo };
+}
+async function storeReading(p) {
+  const { photo, ...row } = p;
+  const reading = await api("POST", "meter_readings", row);
+  if (photo) await uploadFiles("meter_readings", reading.id, [photo]);
+}
+
 function bindRelated() {
   const body = $("#drawerBody");
   body.querySelectorAll("[data-add]").forEach((b) => (b.onclick = () => openForm(b.dataset.add, null, JSON.parse(b.dataset.presets), true)));
@@ -934,15 +970,19 @@ function bindRelated() {
   const photo = $("#rd_photo");
   if (photo) photo.onchange = () => { $("#rd_photo_name").textContent = photo.files[0] ? photo.files[0].name : "Take / choose photo"; $("#rd_photo_lbl").classList.toggle("chosen", !!photo.files[0]); };
   if (add) add.onclick = async () => {
+    const pending = pendingReading();
+    if (!pending) return showFormError("Please enter the meter reading.");
+    if (pending.error) return showFormError(pending.error);
     try {
       add.disabled = true;
-      const reading = await api("POST", "meter_readings", { meter_id: Number(add.dataset.meter), reading_date: $("#rd_date").value, value: $("#rd_value").value, reading_type: $("#rd_type").value });
-      if (photo && photo.files[0]) await uploadFiles("meter_readings", reading.id, [photo.files[0]]);
-      await loadAll(); toast(photo && photo.files[0] ? "Reading and photo saved" : "Reading added"); render(); drawForm();
+      await storeReading(pending);
+      await loadAll(); toast(pending.photo ? "Reading and photo saved" : "Reading added"); render(); drawForm();
     } catch (err) { add.disabled = false; showFormError(err.message); }
   };
+  const val = $("#rd_value");
+  if (val) val.onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); add.click(); } };
   body.querySelectorAll("[data-del-reading]").forEach((b) => (b.onclick = async () => {
-    if (!confirm("Delete this reading?")) return;
+    if (!await askConfirm("Delete this reading?")) return;
     try { await api("DELETE", `meter_readings/${b.dataset.delReading}`); await loadAll(); render(); drawForm(); }
     catch (err) { showFormError(err.message); }
   }));
@@ -1055,8 +1095,8 @@ function renderRent() {
   $("#view").innerHTML = `<div class="sticky-top">${head}
     <div class="kpis">
       <div class="kpi"><div class="kpi-label">Expected rental income ${label}</div><div class="kpi-value">${fmtMoney(total)}</div><div class="kpi-sub">incl. prepayments${multi ? ` · Ø ${fmtMoney(total / yms.length)} per month` : ""}</div></div>
-      <div class="kpi"><div class="kpi-label">Received ${label}</div><div class="kpi-value">${fmtMoney(received)}</div><div class="kpi-sub">${received >= total - 0.01 ? "fully received" : fmtMoney(total - received) + " not yet received"}</div></div>
-      <div class="kpi"><div class="kpi-label">thereof base rent</div><div class="kpi-value">${fmtMoney(cold)}</div><div class="kpi-sub">${fmtMoney(total - cold)} prepayments / other</div></div>
+      <div class="kpi kpi-blue"><div class="kpi-label">Received ${label}</div><div class="kpi-value">${fmtMoney(received)}</div><div class="kpi-sub ${received >= total - 0.01 ? "kpi-good" : "kpi-missing"}">${received >= total - 0.01 ? "fully received" : fmtMoney(total - received) + " not yet received"}</div></div>
+      <div class="kpi kpi-green"><div class="kpi-label">Net rent</div><div class="kpi-value">${fmtMoney(cold)}</div><div class="kpi-sub">${fmtMoney(total - cold)} prepayments / other</div></div>
       <div class="kpi"><div class="kpi-label">Occupancy ${fmtMonth(st.to)}</div><div class="kpi-value">${rented.length} / ${rentable.length}</div><div class="kpi-sub">${rentable.length ? Math.round((rented.length / rentable.length) * 100) + " % let (residential/commercial)" : "no units"}</div></div>
     </div></div>
     <div class="card">
@@ -1066,7 +1106,8 @@ function renderRent() {
         <tbody>${groups.map((g) => `
           <tr class="group"><td colspan="${multi ? 7 : 6}">${icon("building", 16)} ${esc(buildingShort(g.b))}</td><td class="num">${fmtMoney(sum(g.ls, (l) => exp(l, leaseTotal)))}</td><td class="num">${fmtMoney(sum(g.ls, got))}</td></tr>
           ${g.ls.map((l) => { const t = exp(l, leaseTotal), r = got(l);
-            return `<tr class="clickable" data-lease="${l.id}"><td>${esc(unitLabel(byId("units", l.unit_id), false))}</td><td>${esc(tenantName(byId("tenants", l.tenant_id)))}</td>
+            const uc = unitColor(g.b.id, l.unit_id);
+            return `<tr class="clickable in-sub" style="--uc:${uc}" data-lease="${l.id}"><td><span class="dot" style="background:${uc}"></span> ${esc(unitLabel(byId("units", l.unit_id), false))}</td><td>${esc(tenantName(byId("tenants", l.tenant_id)))}</td>
             ${multi ? `<td class="num">${activeMonths(l)}</td>` : ""}
             <td class="num">${fmtMoney(exp(l, (x) => x.cold_rent))}</td><td class="num">${fmtMoney(exp(l, (x) => x.service_charge))}</td><td class="num">${fmtMoney(exp(l, (x) => x.heating_charge))}</td><td class="num">${fmtMoney(exp(l, (x) => x.other_charge))}</td><td class="num"><strong>${fmtMoney(t)}</strong></td>
             <td class="num">${r >= t - 0.01 ? `<span class="pill ok">${fmtMoney(r)}</span>` : r ? `<span class="pill free">${fmtMoney(r)}</span>` : '<span class="muted">–</span>'}</td></tr>`; }).join("")}`).join("")}
@@ -1079,7 +1120,7 @@ function renderRent() {
       <div class="table-wrap"><table>
         <thead><tr><th>Month</th><th class="num">Base rent</th><th class="num">Prepayments / other</th><th class="num">Expected</th><th class="num">Received</th><th style="width:34%"></th></tr></thead>
         <tbody>${months.map((m) => `<tr class="month-row" data-ym="${m.ym}" title="Click: payments of ${fmtMonth(m.ym)}" ${!multi && m.ym === st.from ? 'style="background:var(--accent-soft)"' : ""}><td>${fmtMonth(m.ym)}</td><td class="num">${fmtMoney(m.cold)}</td><td class="num">${fmtMoney(m.extra)}</td><td class="num">${fmtMoney(m.total)}</td><td class="num">${m.received ? fmtMoney(m.received) : '<span class="muted">–</span>'}</td>
-          <td><div class="bar"><div style="width:${(m.total / maxM) * 100}%"></div><div class="got" style="width:${(Math.min(m.received, m.total) / maxM) * 100}%"></div></div></td></tr>`).join("")}</tbody>
+          <td><div class="bar"><div class="${m.ym <= thisMonth() && m.received < m.total - 0.01 ? "miss" : ""}" style="width:${(m.total / maxM) * 100}%"></div><div class="got" style="width:${(Math.min(m.received, m.total) / maxM) * 100}%"></div></div></td></tr>`).join("")}</tbody>
         <tfoot><tr><td>Total</td><td class="num">${fmtMoney(sum(months, (m) => m.cold))}</td><td class="num">${fmtMoney(sum(months, (m) => m.extra))}</td><td class="num">${fmtMoney(sum(months, (m) => m.total))}</td><td class="num">${fmtMoney(sum(months, (m) => m.received))}</td><td></td></tr></tfoot>
       </table></div>
     </div>`;
@@ -1115,7 +1156,7 @@ function renderTenantsUnits() {
       <div class="kpi"><div class="kpi-label">Active tenants</div><div class="kpi-value">${activeTenants.size}</div><div class="kpi-sub">${db.tenants.length} tenants on record</div></div>
       <div class="kpi"><div class="kpi-label">Lettable area</div><div class="kpi-value">${fmtNum(livingArea)} m²</div></div>
     </div>
-    <div class="card"><div class="table-wrap">${groups.length ? `<table>
+    <div class="card"><div class="table-wrap">${groups.length ? `<table class="fit">
       <thead><tr><th>Unit</th><th>Type</th><th class="num">Area</th><th>Tenant</th><th>Contact</th><th>Lease start</th><th class="num">Base rent</th><th class="num">€/m² base</th><th class="num">Total</th><th class="num">Meters</th><th>Status</th></tr></thead>
       <tbody>${groups.map((g) => `<tr class="group"><td colspan="11">${esc(buildingShort(g.b))}</td></tr>
         ${g.units.map((u) => { const l = currentLease(u.id); const t = l && byId("tenants", l.tenant_id);
@@ -1183,7 +1224,7 @@ function renderMeterData() {
       <div class="kpi"><div class="kpi-label">Colour code</div><div class="legend-col">${["apt", "com", "anc", "common"].map((c) => `<span><span class="dot ${c}"></span>${CATEGORY_LABEL[c]}</span>`).join("")}</div></div>
     </div>
     ${sections.length ? sections.map((s) => `<div class="card"><div class="card-head"><h3>${icon("building", 18)} ${esc(buildingShort(s.b))}</h3><span class="muted">${sum(s.units, (x) => x.meters.length)} meters</span></div>
-      <div class="table-wrap"><table class="metertable">
+      <div class="table-wrap"><table class="metertable fit">
       <thead><tr><th class="stripe"></th><th>Meter type</th><th>Number</th><th>Location</th><th>Last reading</th><th class="num">Value</th><th class="num">Consumption since previous</th><th></th></tr></thead>
       <tbody>${s.units.map(({ u, meters }) => { const cat = unitCategory(u); const l = u && currentLease(u.id); const t = l && byId("tenants", l.tenant_id);
         return `<tr class="unit-head ${cat}"><td class="stripe"></td><td colspan="7">
@@ -1468,6 +1509,8 @@ function openMonthDetail(ym, buildingFilter) {
 }
 
 // ---------------------------------------------------------------- Data Admin: settings (program and data location)
+const rcLastReadHtml = () => `<span>Last read: <strong>${esc(db.settings?.rent_control_read || "never")}</strong></span>`;
+
 async function renderSettings() {
   if (Backend.mode === "cloud") return renderCloudSettings();
   return renderServerSettings();
@@ -1513,13 +1556,16 @@ async function renderServerSettings() {
       </div>
     </div>
     <div class="card settings">
-      <div class="card-head"><h3>${icon("file", 18)} Import source folder <span class="muted">(Access / Excel files for the import script)</span></h3>${ro ? "" : `<button class="btn small" data-open="source">${icon("folder", 16)} Open in Explorer</button>`}</div>
+      <div class="card-head"><h3>${icon("file", 18)} Import source folder <span class="muted">(Excel file with paid / outstanding rents – read only)</span></h3>${ro ? "" : `<button class="btn small" data-open="source">${icon("folder", 16)} Open in Explorer</button>`}</div>
       <div class="card-body">
         <div class="path">${esc(info.source_dir)}</div>
-        <div class="facts">${found(info.source_files.access, "Mieterverwaltung.accdb")}${found(info.source_files.excel, "Mietverwaltung_Stammdaten.xlsx")}${found(info.source_files.rent_control, "Rent Control (German Flats).xlsx")}</div>
-        ${ro ? "" : `<div class="folder-pick"><div class="pick-row"><input class="input" id="srcPath" placeholder="Folder that contains the Access / Excel files"><button class="btn" data-browse="srcPath">${icon("folder", 18)} Browse…</button><button class="btn primary" id="saveSrc">${icon("check", 18)} Save</button></div></div>`}
+        <div class="facts">${Object.entries(info.source_files || {}).map(([name, ok]) => found(ok, name)).join("")}${rcLastReadHtml()}</div>
+        <div class="pick-row"><button class="btn" id="rcCheck">${icon("refresh", 18)} Compare with Rent Control.xlsx now</button></div>
+        <p class="muted">The file is read automatically when the program opens – but only if it was changed since the last time. Differences are shown for confirmation; the Excel file is never changed.</p>
+        ${ro ? "" : `<div class="folder-pick"><div class="pick-row"><input class="input" id="srcPath" placeholder="Folder that contains Rent Control.xlsx"><button class="btn" data-browse="srcPath">${icon("folder", 18)} Browse…</button><button class="btn primary" id="saveSrc">${icon("check", 18)} Save</button></div></div>`}
       </div>
     </div>`;
+  $("#rcCheck").onclick = () => rentControlCheck({ force: true });
   if (ro) return;
   const post = (action, body) => api("POST", "system/" + action, body || {});
   $("#view").querySelectorAll("[data-open]").forEach((b) => (b.onclick = () => post("open", { which: b.dataset.open })));
@@ -1535,7 +1581,7 @@ async function renderServerSettings() {
   const switchData = async (mode) => {
     const path = $("#dataPath").value.trim();
     if (!path) return toast("Please choose a folder first.", true);
-    if (mode === "move" && !confirm(`Copy the database and all files to\n${path}\nand continue working there?\n\nThe current folder stays unchanged as a backup.`)) return;
+    if (mode === "move" && !await askConfirm(`Copy the database and all files to\n${path}\nand continue working there?\n\nThe current folder stays unchanged as a backup.`)) return;
     try { const r = await post("data_dir", { path, mode }); await loadAll(); toast(mode === "move" ? "Data moved – the app now uses the new folder" : "Switched to the selected data folder"); render(); if (r.previous_data_dir) console.info("previous data folder:", r.previous_data_dir); }
     catch (e) { toast(e.message, true); }
   };
@@ -1615,15 +1661,27 @@ async function renderCloudSettings() {
         <p class="muted">Changes are saved automatically a moment after each entry. Once per day a backup copy of the database is written to <code>backups/</code> in the data folder.
         The PC version (<code>start.bat</code>) uses the same file – avoid editing on two devices at exactly the same time; if it happens, the app notices it and asks you what to do.</p>
       </div>
+    </div>
+    <div class="card settings">
+      <div class="card-head"><h3>${icon("file", 18)} Rent Control.xlsx <span class="muted">(paid / outstanding rents – read only)</span></h3></div>
+      <div class="card-body">
+        <div class="path">OneDrive / ${esc(store.rentControlPath || "–")}</div>
+        <div class="facts">${rcLastReadHtml()}</div>
+        <div class="pick-row"><button class="btn" id="rcCheck">${icon("refresh", 18)} Compare now</button>
+          ${store.kind === "onedrive" ? `<input class="input" id="rcPath" value="${esc(store.rentControlPath || "")}"><button class="btn" id="rcPathSave">${icon("check", 18)} Save path</button>` : ""}</div>
+        <p class="muted">The file is read automatically when the program opens – but only if it was changed since the last time. Differences are shown for confirmation; the Excel file is never changed.</p>
+      </div>
     </div>`;
   const on = (id, fn) => { const el = $("#" + id); if (el) el.onclick = fn; };
-  on("signOut", () => { if (!Backend.dirty || confirm("There are unsaved changes. Sign out anyway?")) store.signOut(); });
+  on("rcCheck", () => rentControlCheck({ force: true }));
+  on("rcPathSave", () => { store.setRentControlPath($("#rcPath").value.trim()); toast("Path saved"); rentControlCheck({ force: true }); });
+  on("signOut", async () => { if (!Backend.dirty || await askConfirm("There are unsaved changes. Sign out anyway?")) store.signOut(); });
   on("reloadDb", async () => {
-    if (Backend.dirty && !confirm("Discard unsaved changes and reload the data from OneDrive?")) return;
+    if (Backend.dirty && !await askConfirm("Discard unsaved changes and reload the data from OneDrive?")) return;
     try { await Backend.reload(); await loadAll(); toast("Latest data loaded"); render(); } catch (e) { toast(e.message, true); }
   });
   on("cfReload", async () => { try { await Backend.reload(); await loadAll(); toast("Latest data loaded"); render(); } catch (e) { toast(e.message, true); } });
-  on("cfForce", async () => { if (!confirm("Overwrite the version in OneDrive with the data on this device?")) return; await Backend.save(true); render(); });
+  on("cfForce", async () => { if (!await askConfirm("Overwrite the version in OneDrive with the data on this device?")) return; await Backend.save(true); render(); });
   on("retrySave", async () => { await Backend.save(true); render(); });
   on("saveNow", async () => { await Backend.save(true); toast(Backend.status.state === "saved" ? "Saved to OneDrive" : Backend.status.error || "Not saved", Backend.status.state !== "saved"); render(); });
   on("downloadDb", () => {
@@ -1661,7 +1719,7 @@ async function openFolderBrowser(path, { onPick } = {}) {
   $("#cancelBtn").onclick = closeDrawer;
   $("#useFolder").onclick = async () => {
     if (onPick) { closeDrawer(); return onPick(path); }
-    if (Backend.dirty && !confirm("There are unsaved changes in the current folder. Switch anyway?")) return;
+    if (Backend.dirty && !await askConfirm("There are unsaved changes in the current folder. Switch anyway?")) return;
     store.setFolder(path);
     closeDrawer();
     try { await Backend.reload(); await loadAll(); toast("Data folder changed"); render(); } catch (e) { toast(e.message, true); }
@@ -1733,6 +1791,7 @@ async function boot() {
   try { await loadAll(); }
   catch (e) { $("#view").innerHTML = `<div class="card"><div class="empty">Data could not be loaded.<br><span class="muted">${esc(e.message)}</span></div></div>`; return; }
   render();
+  rentControlCheck({ auto: true }); // reads Rent Control.xlsx only if it changed since the last time
 }
 
 // mobile navigation (menu button in the header)

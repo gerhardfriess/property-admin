@@ -402,3 +402,84 @@ tr.in-sub td:first-child { border-left: 4px solid var(--uc); }
   .period-head { flex-direction: column; align-items: flex-start; }
   .search-wrap, .search { width: 100%; }
 }
+
+/* Rent Control reconciliation */
+.rc-h { margin: 18px 0 6px; font-size: 15px; }
+.rc-info { margin-top: 16px; }
+.rc-info summary { cursor: pointer; color: var(--muted, #8a94a6); }
+.rc-pick, .rc-all { width: 16px; height: 16px; }
+
+/* KPI colours (Rental Income) */
+:root { --miss: #8b1a1a; }
+.kpi.kpi-blue { border-top: 3px solid var(--accent); }
+.kpi.kpi-blue .kpi-value, .kpi-sub.kpi-good { color: var(--accent); }
+.kpi-sub.kpi-missing { color: var(--miss); font-weight: 600; }
+.kpi.kpi-green { border-top: 3px solid var(--ok); }
+.kpi.kpi-green .kpi-value { color: var(--ok); }
+.bar div.miss { background: var(--miss); }
+
+/* ---------- Compact, uniform tables (fit to content) ---------- */
+table { font-size: 13px; }
+th { font-size: 13px; }
+th, td { padding: 7px 10px; }
+td .pill, td .muted, td .cat-pill, tr.group td, tr.subgroup td, tr.unit-head td { font-size: inherit; }
+td div.muted { font-size: 12px; }
+table.fit { width: auto; min-width: 0; }
+td.center, th.center { text-align: center; }
+.photo-tick { display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; border-radius: 50%; background: var(--ok-soft); color: var(--ok); }
+.photo-tick .ic { stroke-width: 3; }
+
+/* ---------- Wider entry panel ---------- */
+.drawer { width: min(860px, 100vw); }
+.drawer.wide { width: min(1000px, 100vw); }
+
+/* ---------- Mobile: more compact ---------- */
+@media (max-width: 820px) {
+  body { font-size: 13px; }
+  .topbar { padding: calc(6px + env(safe-area-inset-top)) 10px 6px; }
+  .topbar h1 { font-size: 17px; }
+  .crumb { font-size: 10px; }
+  .view { padding: 8px 6px 30px; }
+  .btn { padding: 5px 10px; }
+  .input, select.input, textarea.input { padding: 5px 8px; }
+  .card + .card { margin-top: 10px; }
+  .card-head { padding: 8px 10px; }
+  .card-head h3 { font-size: 14px; }
+  .card-body { padding: 10px; }
+  .kpis { gap: 6px; margin-bottom: 10px; }
+  .kpi { padding: 7px 9px; }
+  .kpi-label, .kpi-sub { font-size: 11px; }
+  .kpi-value { font-size: 16px; }
+  table { font-size: 12px; }
+  th { font-size: 12px; }
+  th, td { padding: 5px 7px; }
+  td div.muted { font-size: 11px; }
+  tr.subgroup td, tr.unit-head td { padding-top: 6px; padding-bottom: 6px; }
+  .seg-btn { padding: 4px 9px; }
+  .period { padding: 10px 10px 26px; margin-bottom: 10px; }
+  .drawer-head { padding: 10px 12px; }
+  .drawer-body { padding: 10px 12px; }
+  .drawer-foot { padding: 8px 12px; }
+  .form-grid { gap: 8px; }
+  .section-title { margin: 14px 0 6px; }
+}
+@media (max-width: 820px) {
+  td.hm, th.hm { display: none; }
+  .top-actions { flex-wrap: nowrap; }
+  .top-actions .search-wrap { flex: 1; min-width: 0; width: auto; }
+  .top-actions .btn.primary { flex: none; }
+}
+
+/* ---------- In-app confirm dialog ---------- */
+.confirm-backdrop { position: fixed; inset: 0; z-index: 90; background: rgba(16,32,48,.4); display: flex; align-items: center; justify-content: center; padding: 16px; }
+.confirm-box { background: #fff; border-radius: 10px; box-shadow: 0 20px 50px rgba(0,0,0,.25); padding: 18px 20px 14px; width: min(380px, 100%); }
+.confirm-box p { margin: 0 0 16px; white-space: pre-line; }
+.confirm-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.btn.primary.danger-fill { background: var(--danger); border-color: var(--danger); }
+.btn.primary.danger-fill:hover { background: #a93226; }
+
+/* ---------- Meter reading entry: narrower date, wider reading ---------- */
+.inline-form { grid-template-columns: 9.5em minmax(9em, 1.8fr) minmax(7em, 1fr) minmax(8em, 1.1fr) auto; }
+.inline-form #rd_value { font-weight: 600; }
+.att-del { color: var(--danger); }
+@media (max-width: 820px) { .inline-form { grid-template-columns: 9.5em 1fr; } }

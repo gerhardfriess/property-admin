@@ -144,6 +144,19 @@ class GraphStore {
     return res.ok;
   }
 
+  // ---------- Rent Control.xlsx (read only – never written)
+  get rentControlPath() { return (localStorage.getItem("pa_rent_control_path") ?? this.cfg.rentControlFile ?? "").replace(/^\/+|\/+$/g, ""); }
+  setRentControlPath(p) { localStorage.setItem("pa_rent_control_path", p.replace(/^\/+|\/+$/g, "")); }
+  async rentControlFile() {
+    if (!this.rentControlPath) return null;
+    const res = await this.graph(`/me/drive/root:/${encodePath(this.rentControlPath)}`, { raw: true });
+    if (res.status === 404) return null;
+    if (!res.ok) throw new StoreError(`OneDrive error ${res.status}`);
+    const dl = await fetch((await res.json())["@microsoft.graph.downloadUrl"], { cache: "no-store" });
+    if (!dl.ok) throw new StoreError("Rent Control.xlsx could not be downloaded from OneDrive.");
+    return new Uint8Array(await dl.arrayBuffer());
+  }
+
   // ---------- folder browser (settings)
   async listFolders(path) {
     const p = path.replace(/^\/+|\/+$/g, "");
@@ -173,5 +186,11 @@ class DevStore {
   async fileUrl(rel) { return this.files.get(rel) || null; }
   async fileExists(rel) { return this.files.has(rel); }
   async listFolders() { return { folders: [], hasDb: true }; }
+  get rentControlPath() { return "dev/Rent Control.xlsx"; }
+  setRentControlPath() {}
+  async rentControlFile() {
+    const r = await fetch("dev/Rent%20Control.xlsx", { cache: "no-store" });
+    return r.ok ? new Uint8Array(await r.arrayBuffer()) : null;
+  }
   setFolder() {}
 }

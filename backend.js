@@ -48,7 +48,7 @@ CREATE TABLE IF NOT EXISTS attachments (id INTEGER PRIMARY KEY AUTOINCREMENT, en
   stored_path TEXT NOT NULL, mime TEXT, size INTEGER, caption TEXT, created_at TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_attachments_record ON attachments (entity, record_id);`;
   const MIGRATIONS = [["units", "parent_unit_id", "INTEGER REFERENCES units(id) ON DELETE SET NULL"], ["tenants", "co_tenant", "TEXT"], ["leases", "deposit_installments", "INTEGER DEFAULT 1"]];
-  const DEFAULT_SETTINGS = { tracking_start: "2025-02", rent_grace_days: "5" };
+  const DEFAULT_SETTINGS = { tracking_start: "2025-02", rent_grace_days: "5", rent_control_hash: "", rent_control_read: "" };
   const ATTACHABLE = ["buildings", "units", "meters", "meter_readings", "tenants", "leases", "settlements", "payments"];
   const ALLOWED_EXT = [".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic", ".pdf"];
   return { TABLES, FLOAT_COLUMNS, SQL, MIGRATIONS, DEFAULT_SETTINGS, ATTACHABLE, ALLOWED_EXT, MAX_UPLOAD: 25 * 1024 * 1024 };
@@ -78,6 +78,13 @@ class ServerBackend {
     return data;
   }
   fileUrl(a) { return `files/${a.id}`; }
+  /** Rent Control.xlsx (read only) – null if the file does not exist */
+  async rentControlFile() {
+    const r = await fetch("source/rent-control", { cache: "no-store" });
+    if (r.status === 404) return null;
+    if (!r.ok) throw new ApiError(r.status, `Rent Control.xlsx could not be read (${r.status})`);
+    return new Uint8Array(await r.arrayBuffer());
+  }
   async resolveFileUrl(a) { return this.fileUrl(a); }
   onStatus() {}
   get dirty() { return false; }
@@ -338,6 +345,7 @@ class LocalBackend {
     this._changed();
     return { deleted: id };
   }
+  rentControlFile() { return this.store.rentControlFile(); }
   fileUrl(a) { return this.store.cachedFileUrl ? this.store.cachedFileUrl("files/" + a.stored_path) : null; }
   resolveFileUrl(a) { return this.store.fileUrl("files/" + a.stored_path); }
 }
