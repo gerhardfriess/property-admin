@@ -50,6 +50,14 @@ const buildingLabel = buildingName;
 const buildingShort = buildingName;
 const unitLabel = (u, withBuilding = true) => { if (!u) return "–"; const b = byId("buildings", u.building_id); return (withBuilding && b ? buildingName(b) + " · " : "") + u.code + (u.unit_type ? ` (${u.unit_type})` : ""); };
 const lastReading = (m) => db.meter_readings.filter((r) => r.meter_id === m.id).reduce((a, r) => (!a || r.reading_date > a.reading_date ? r : a), null);
+/** document icon when the last reading has a photo or the meter has photos/files attached ("" otherwise) */
+function meterDocIcon(m) {
+  const l = lastReading(m);
+  const nr = l ? attachmentsOf("meter_readings", l.id).length : 0, nm = attachmentsOf("meters", m.id).length;
+  if (!nr && !nm) return "";
+  const tip = [nr ? `${nr} photo${nr > 1 ? "s" : ""} with the last reading` : "", nm ? `${nm} file${nm > 1 ? "s" : ""}/photo${nm > 1 ? "s" : ""} on the meter` : ""].filter(Boolean).join(" · ");
+  return `<span class="doc-ind" title="${esc(tip)}">${icon("file", 16)}</span>`;
+}
 const leaseLabel = (l) => (l ? `${unitLabel(byId("units", l.unit_id))} – ${tenantName(byId("tenants", l.tenant_id))}` : "–");
 const leaseShort = (l) => (l ? `${tenantName(byId("tenants", l.tenant_id))} · ${byId("units", l.unit_id)?.code || "?"}` : "–");
 const RENTABLE = ["Apartment", "Commercial", "House"];
@@ -179,6 +187,55 @@ function hydrateAttachments(root = document) {
 }
 new MutationObserver(() => requestAnimationFrame(() => hydrateAttachments())).observe(document.body, { childList: true, subtree: true });
 
+// ---------------------------------------------------------------- dd/mm/yyyy date fields
+// Native date inputs always show the device's own format (often mm/dd/yyyy). Every <input type="date"> gets a
+// dd/mm/yyyy text field in front of it plus a calendar button; the (hidden) native input stays the source of truth
+// (ISO yyyy-mm-dd), so all code reading/writing .value keeps working.
+const isoToDmy = (v) => (/^\d{4}-\d{2}-\d{2}$/.test(v || "") ? `${v.slice(8, 10)}/${v.slice(5, 7)}/${v.slice(0, 4)}` : "");
+function dmyToIso(t) {
+  const m = /^\s*(\d{1,2})[./\-\s](\d{1,2})[./\-\s](\d{2}|\d{4})\s*$/.exec(t || "") || /^\s*(\d{2})(\d{2})(\d{4}|\d{2})\s*$/.exec(t || "");
+  if (!m) return null;
+  const d = +m[1], mo = +m[2], y = m[3].length === 2 ? 2000 + +m[3] : +m[3];
+  const dt = new Date(y, mo - 1, d);
+  if (dt.getFullYear() !== y || dt.getMonth() !== mo - 1 || dt.getDate() !== d) return null;
+  return `${y}-${String(mo).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+}
+const nativeValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
+function enhanceDates(root = document) {
+  root.querySelectorAll('input[type="date"]:not([data-dmy])').forEach((nat) => {
+    nat.dataset.dmy = "1";
+    const wrap = document.createElement("span");
+    wrap.className = "dmy";
+    nat.parentNode.insertBefore(wrap, nat);
+    const txt = document.createElement("input");
+    txt.type = "text"; txt.className = nat.className; txt.placeholder = "dd/mm/yyyy"; txt.inputMode = "numeric"; txt.autocomplete = "off";
+    if (nat.id) txt.setAttribute("aria-label", nat.closest(".field")?.querySelector("label")?.textContent || "Date");
+    if (nat.required) { txt.required = true; nat.required = false; }
+    const btn = document.createElement("button");
+    btn.type = "button"; btn.className = "dmy-btn"; btn.title = "Pick a date"; btn.tabIndex = -1; btn.innerHTML = icon("calendar", 16);
+    wrap.append(txt, btn, nat);
+    nat.classList.add("dmy-native"); nat.tabIndex = -1;
+    txt.value = isoToDmy(nativeValue.get.call(nat));
+    // keep the text field in sync when code sets .value on the native input
+    Object.defineProperty(nat, "value", { configurable: true, get() { return nativeValue.get.call(this); },
+      set(v) { nativeValue.set.call(this, v); txt.value = isoToDmy(v); txt.classList.remove("bad"); } });
+    const commit = (final) => {
+      const t = txt.value.trim();
+      const iso = t ? dmyToIso(t) : "";
+      if (iso === null) { if (final) txt.classList.add("bad"); return; }
+      txt.classList.remove("bad");
+      if (final && iso) txt.value = isoToDmy(iso);
+      if (nativeValue.get.call(nat) !== iso) { nativeValue.set.call(nat, iso); nat.dispatchEvent(new Event("input", { bubbles: true })); nat.dispatchEvent(new Event("change", { bubbles: true })); }
+    };
+    txt.addEventListener("input", () => commit(false));
+    txt.addEventListener("blur", () => commit(true));
+    txt.addEventListener("keydown", (e) => { if (e.key === "Enter") commit(true); });
+    nat.addEventListener("change", () => { txt.value = isoToDmy(nativeValue.get.call(nat)); txt.classList.remove("bad"); });
+    btn.onclick = () => { try { nat.showPicker(); } catch { nat.focus(); nat.click(); } };
+  });
+}
+new MutationObserver(() => enhanceDates()).observe(document.body, { childList: true, subtree: true });
+
 function attachmentTiles(list, deletable = true) {
   return list.map((a) => `<div class="att">
       <a ${attHref(a)} target="_blank" rel="noopener" title="${esc(a.filename)}">${isImage(a) ? `<img ${attSrc(a)} loading="lazy" alt="">` : `<span class="att-file">${icon("file", 28)}<span>${esc(a.filename.split(".").pop().toUpperCase())}</span></span>`}</a>
@@ -203,9 +260,9 @@ function bindAttachments(root, after) {
   };
   root.querySelectorAll("input[data-upload]").forEach((inp) => (inp.onchange = () => doUpload(inp.dataset.upload, [...inp.files])));
   root.querySelectorAll("[data-drop]").forEach((zone) => {
-    zone.ondragover = (e) => { e.preventDefault(); zone.classList.add("over"); };
-    zone.ondragleave = () => zone.classList.remove("over");
-    zone.ondrop = (e) => { e.preventDefault(); zone.classList.remove("over"); doUpload(zone.dataset.drop, [...e.dataTransfer.files]); };
+    zone.ondragover = (e) => { e.preventDefault(); e.stopPropagation(); e.dataTransfer.dropEffect = "copy"; zone.classList.add("over"); };
+    zone.ondragleave = (e) => { if (!zone.contains(e.relatedTarget)) zone.classList.remove("over"); };
+    zone.ondrop = (e) => { e.preventDefault(); e.stopPropagation(); zone.classList.remove("over"); doUpload(zone.dataset.drop, [...e.dataTransfer.files]); };
   });
   root.querySelectorAll("[data-del-att]").forEach((b) => (b.onclick = async (e) => {
     e.preventDefault(); e.stopPropagation();
@@ -464,13 +521,12 @@ const ENTITIES = {
       { key: "notes", label: "Notes", type: "textarea", full: true },
     ],
     columns: [
-      { label: "Assigned to", hideMobile: true, value: (r) => `<span class="dot" style="background:${unitColor(r.building_id, r.unit_id)}"></span> ` + (r.unit_id ? esc(byId("units", r.unit_id)?.code) : '<span class="muted">Common</span>') },
+      { label: "Assigned to", hideMobile: true, value: (r) => (r.unit_id ? esc(byId("units", r.unit_id)?.code) : '<span class="muted">Common</span>') },
       { label: "Meter type", value: (r) => esc(r.meter_type) },
       { label: "Number", value: (r) => (r.number ? `<strong>${esc(r.number)}</strong>` : '<span class="pill free">missing</span>') },
       { label: "Unit", value: (r) => esc(r.measure_unit || "") },
       { label: "Location", value: (r) => esc(r.location || "") },
-      { label: "Last reading", value: (r) => { const l = lastReading(r); return l ? fmtDate(l.reading_date) : '<span class="muted">–</span>'; } },
-      { label: "Photo", value: (r) => { const l = lastReading(r); return l && attachmentsOf("meter_readings", l.id).length ? `<span class="photo-tick" title="Photo of the last reading available">${icon("check", 16)}</span>` : ""; }, center: true },
+      { label: "Last reading", value: (r) => { const l = lastReading(r); const d = meterDocIcon(r); return (l ? fmtDate(l.reading_date) : '<span class="muted">–</span>') + (d ? " " + d : ""); } },
       { label: "Status", value: (r) => (r.active ? '<span class="pill ok">active</span>' : '<span class="pill grey">inactive</span>') },
     ],
     related: (r) => [readingsBlock(r)],
@@ -747,7 +803,7 @@ function renderEntityList(key) {
     const q = st.q.trim().toLowerCase();
     const rows = db[key].filter((r) => !q || ent.columns.map((c) => String(c.value(r)).replace(/<[^>]+>/g, "")).join(" ").toLowerCase().includes(q));
     if (UNIT_OF[key]) rows.sort((a, b) => cmpUnits(UNIT_OF[key](a), UNIT_OF[key](b)) || (a.meter_type || "").localeCompare(b.meter_type || "") || (b.period_year || 0) - (a.period_year || 0));
-    const rowHtml = (r) => `<tr class="clickable" data-id="${r.id}">${ent.columns.map((c) => `<td class="${c.num ? "num" : c.center ? "center" : ""}${c.hideMobile ? " hm" : ""}">${c.value(r)}</td>`).join("")}</tr>`;
+    const rowHtml = (r) => `<tr class="clickable" data-id="${r.id}">${ent.columns.map((c) => `<td class="${c.num ? "num" : c.center ? "center" : ""}${c.hideMobile ? " hm" : ""}${c.cls ? " " + c.cls : ""}">${c.value(r)}</td>`).join("")}</tr>`;
     const groupOf = GROUP_BY[key];
     let body;
     if (groupOf) {
@@ -774,7 +830,7 @@ function renderEntityList(key) {
       <div class="card">
         <div class="table-wrap">
           ${rows.length ? `<table class="fit">
-            <thead><tr>${ent.columns.map((c) => `<th class="${c.num ? "num" : c.center ? "center" : ""}${c.hideMobile ? " hm" : ""}">${esc(c.label)}</th>`).join("")}</tr></thead>
+            <thead><tr>${ent.columns.map((c) => `<th class="${c.num ? "num" : c.center ? "center" : ""}${c.hideMobile ? " hm" : ""}${c.cls ? " " + c.cls : ""}">${esc(c.label)}</th>`).join("")}</tr></thead>
             <tbody>${body}</tbody>
           </table>` : `<div class="empty">${db[key].length ? "No matches." : `No ${esc(ent.title.toLowerCase())} yet.<br><br><button class="btn primary" id="emptyNew">${icon("plus", 18)} ${esc(ent.newLabel)}</button>`}</div>`}
         </div>
@@ -931,18 +987,21 @@ function readingsBlock(meter) {
     <div class="related">
       ${rows.length ? `<table><thead><tr><th>Date</th><th class="num">Reading</th><th class="num">Consumption</th><th>Type</th><th>Photo</th><th></th></tr></thead><tbody>
         ${rows.map((r, i) => { const prev = rows[i + 1]; const photos = attachmentsOf("meter_readings", r.id);
-          return `<tr><td>${fmtDate(r.reading_date)}</td><td class="num">${fmtNum(r.value)} ${unit}</td>
+          return `<tr data-drop="meter_readings:${r.id}" title="Drop a photo here to attach it to this reading"><td>${fmtDate(r.reading_date)}</td><td class="num">${fmtNum(r.value)} ${unit}</td>
           <td class="num">${prev ? fmtNum(r.value - prev.value) + " " + unit : "–"}</td><td>${esc(r.reading_type || "")}</td>
           <td><span class="thumbs">${photos.map((a) => `<a ${attHref(a)} target="_blank" rel="noopener">${isImage(a) ? `<img ${attSrc(a)} loading="lazy" alt="">` : icon("file", 18)}</a>`).join("")}
             <label class="icon-btn" title="Add photo">${icon("camera", 18)}<input type="file" accept="image/*" capture="environment" data-upload="meter_readings:${r.id}" hidden></label></span></td>
           <td class="num"><button class="icon-btn danger" data-del-reading="${r.id}" title="Delete reading">${icon("trash", 18)}</button></td></tr>`; }).join("")}
       </tbody></table>` : '<div class="empty" style="padding:14px">No readings recorded yet.</div>'}
+      <div class="new-reading">
+      <div class="new-reading-head"><button class="btn primary small" id="rd_add" data-meter="${meter.id}">${icon("plus", 16)} Add reading</button><span class="muted">Fill in the fields below, then press Add reading (or Save)</span></div>
       <div class="inline-form">
-        <div class="field"><label>Reading date</label><input class="input" type="date" id="rd_date" value="${today()}"></div>
+        <div class="field"><label>Reading date</label><input class="input" type="date" id="rd_date"></div>
         <div class="field"><label>Reading (${unit || "value"})</label><input class="input" id="rd_value" inputmode="decimal"></div>
         <div class="field"><label>Type</label><select class="input" id="rd_type"><option>Own reading</option><option>Tenant</option><option>Utility provider</option><option>Move-in</option><option>Move-out</option><option>Estimate</option></select></div>
-        <div class="field"><label>Photo of the meter</label><label class="btn photo-btn" id="rd_photo_lbl">${icon("camera", 18)} <span id="rd_photo_name">Take / choose photo</span><input type="file" accept="image/*" capture="environment" id="rd_photo" hidden></label></div>
-        <button class="btn primary" id="rd_add" data-meter="${meter.id}">${icon("plus", 18)} Add</button>
+        <div class="field"><label>Photo of the meter</label><label class="btn photo-btn" id="rd_photo_lbl" title="Take, choose or drop a photo">${icon("camera", 18)} <span id="rd_photo_name">Take / choose photo</span><input type="file" accept="image/*" capture="environment" id="rd_photo" hidden></label></div>
+        <button class="icon-btn danger rd-clear" id="rd_clear" title="Clear the entry fields">${icon("trash", 18)}</button>
+      </div>
       </div>
     </div>`;
 }
@@ -951,7 +1010,7 @@ function readingsBlock(meter) {
 function pendingReading() {
   const add = $("#rd_add"); if (!add) return null;
   const value = $("#rd_value").value.trim(), photo = $("#rd_photo").files[0] || null;
-  if (!value && !photo) return null;
+  if (!value && !photo && !$("#rd_date").value) return null;
   if (!value) return { error: "Please enter the meter reading for the chosen photo." };
   if (!$("#rd_date").value) return { error: "Please enter the reading date." };
   return { meter_id: Number(add.dataset.meter), reading_date: $("#rd_date").value, value: value.replace(/\s/g, "").replace(",", "."), reading_type: $("#rd_type").value, photo };
@@ -969,6 +1028,19 @@ function bindRelated() {
   const add = $("#rd_add");
   const photo = $("#rd_photo");
   if (photo) photo.onchange = () => { $("#rd_photo_name").textContent = photo.files[0] ? photo.files[0].name : "Take / choose photo"; $("#rd_photo_lbl").classList.toggle("chosen", !!photo.files[0]); };
+  // drag & drop a photo onto the new-reading entry (the whole grey box) = choose it for the reading
+  const entry = body.querySelector(".new-reading");
+  if (entry && photo) {
+    entry.ondragover = (e) => { e.preventDefault(); e.stopPropagation(); e.dataTransfer.dropEffect = "copy"; entry.classList.add("over"); };
+    entry.ondragleave = (e) => { if (!entry.contains(e.relatedTarget)) entry.classList.remove("over"); };
+    entry.ondrop = (e) => {
+      e.preventDefault(); e.stopPropagation(); entry.classList.remove("over");
+      const f = [...e.dataTransfer.files].find((x) => x.type.startsWith("image/") || /\.(heic|jpe?g|png|webp)$/i.test(x.name));
+      if (!f) return toast("Please drop an image file", true);
+      const dt = new DataTransfer(); dt.items.add(f); photo.files = dt.files; photo.onchange();
+      toast("Photo chosen – enter the reading and press Add reading or Save");
+    };
+  }
   if (add) add.onclick = async () => {
     const pending = pendingReading();
     if (!pending) return showFormError("Please enter the meter reading.");
@@ -978,6 +1050,11 @@ function bindRelated() {
       await storeReading(pending);
       await loadAll(); toast(pending.photo ? "Reading and photo saved" : "Reading added"); render(); drawForm();
     } catch (err) { add.disabled = false; showFormError(err.message); }
+  };
+  const clear = $("#rd_clear");
+  if (clear) clear.onclick = () => {
+    $("#rd_date").value = ""; $("#rd_value").value = ""; $("#rd_type").selectedIndex = 0; photo.value = "";
+    $("#rd_photo_name").textContent = "Take / choose photo"; $("#rd_photo_lbl").classList.remove("chosen");
   };
   const val = $("#rd_value");
   if (val) val.onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); add.click(); } };
@@ -1211,7 +1288,7 @@ function renderMeterData() {
     return `<tr class="clickable mrow ${cat}" data-meter="${m.id}">
       <td class="stripe"></td>
       <td>${esc(m.meter_type)}${m.active ? "" : ' <span class="pill grey">inactive</span>'}</td><td>${m.number ? esc(m.number) : '<span class="pill free">missing</span>'}</td><td>${esc(m.location || "")}</td>
-      <td>${last ? fmtDate(last.reading_date) : '<span class="pill free">none</span>'}${photos ? ` <span class="muted" title="photo attached">${icon("camera", 14)}</span>` : ""}</td>
+      <td>${last ? fmtDate(last.reading_date) : '<span class="pill free">none</span>'}${meterDocIcon(m) ? " " + meterDocIcon(m) : ""}</td>
       <td class="num">${last ? fmtNum(last.value) + " " + u : ""}</td>
       <td class="num">${last && prev ? fmtNum(last.value - prev.value) + " " + u : ""}</td>
       <td class="num"><button class="btn small">${icon("plus", 16)} Reading</button></td></tr>`; };
@@ -1593,6 +1670,9 @@ async function renderServerSettings() {
 }
 
 // ---------------------------------------------------------------- start
+// files dropped outside a drop zone would make the browser leave the app and open the picture – prevent that
+window.addEventListener("dragover", (e) => { if (e.dataTransfer?.types?.includes("Files")) { e.preventDefault(); e.dataTransfer.dropEffect = "none"; } });
+window.addEventListener("drop", (e) => { if (e.dataTransfer?.types?.includes("Files")) { e.preventDefault(); toast("Drop the photo onto “Files & photos”, a reading or the new-reading box", true); } });
 $("#drawerClose").onclick = closeDrawer;
 $("#backdrop").onclick = closeDrawer;
 document.addEventListener("keydown", (e) => { if (e.key === "Escape" && $("#drawer").classList.contains("open")) closeDrawer(); });
