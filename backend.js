@@ -13,7 +13,7 @@ const PA_SCHEMA = (() => {
   const TABLES = {
     buildings: [["code", "name", "street", "house_no", "zip", "city", "country", "year_built", "plot_area", "building_type", "notes"], ["code", "street", "city"], ["year_built", "plot_area"]],
     units: [["building_id", "code", "unit_type", "floor", "area", "rooms", "parent_unit_id", "notes"], ["building_id", "code", "unit_type"], ["building_id", "area", "rooms", "parent_unit_id"]],
-    meters: [["building_id", "unit_id", "meter_type", "number", "measure_unit", "location", "active", "notes"], ["building_id", "meter_type"], ["building_id", "unit_id", "active"]],
+    meters: [["building_id", "unit_id", "meter_type", "number", "measure_unit", "location", "supplier", "active", "notes"], ["building_id", "meter_type"], ["building_id", "unit_id", "active"]],
     meter_readings: [["meter_id", "reading_date", "value", "reading_type", "notes"], ["meter_id", "reading_date", "value"], ["meter_id", "value"]],
     tenants: [["salutation", "first_name", "last_name", "company", "co_tenant", "street", "zip", "city", "phone", "email", "iban", "notes"], [], []],
     leases: [["unit_id", "tenant_id", "start_date", "end_date", "cold_rent", "service_charge", "heating_charge", "other_charge", "deposit", "deposit_installments", "payment_day", "notes"],
@@ -29,7 +29,7 @@ CREATE TABLE IF NOT EXISTS buildings (id INTEGER PRIMARY KEY AUTOINCREMENT, code
 CREATE TABLE IF NOT EXISTS units (id INTEGER PRIMARY KEY AUTOINCREMENT, building_id INTEGER NOT NULL REFERENCES buildings(id) ON DELETE RESTRICT,
   code TEXT NOT NULL, unit_type TEXT NOT NULL, floor TEXT, area REAL, rooms REAL, parent_unit_id INTEGER REFERENCES units(id) ON DELETE SET NULL, notes TEXT, UNIQUE (building_id, code));
 CREATE TABLE IF NOT EXISTS meters (id INTEGER PRIMARY KEY AUTOINCREMENT, building_id INTEGER NOT NULL REFERENCES buildings(id) ON DELETE RESTRICT,
-  unit_id INTEGER REFERENCES units(id) ON DELETE RESTRICT, meter_type TEXT NOT NULL, number TEXT, measure_unit TEXT, location TEXT, active INTEGER DEFAULT 1, notes TEXT);
+  unit_id INTEGER REFERENCES units(id) ON DELETE RESTRICT, meter_type TEXT NOT NULL, number TEXT, measure_unit TEXT, location TEXT, active INTEGER DEFAULT 1, notes TEXT, supplier TEXT);
 CREATE TABLE IF NOT EXISTS meter_readings (id INTEGER PRIMARY KEY AUTOINCREMENT, meter_id INTEGER NOT NULL REFERENCES meters(id) ON DELETE CASCADE,
   reading_date TEXT NOT NULL, value REAL NOT NULL, reading_type TEXT, notes TEXT);
 CREATE TABLE IF NOT EXISTS tenants (id INTEGER PRIMARY KEY AUTOINCREMENT, salutation TEXT, first_name TEXT, last_name TEXT, company TEXT, co_tenant TEXT,
@@ -45,9 +45,9 @@ CREATE TABLE IF NOT EXISTS reminders (id INTEGER PRIMARY KEY AUTOINCREMENT, unit
   lease_id INTEGER REFERENCES leases(id) ON DELETE CASCADE, kind TEXT NOT NULL, title TEXT NOT NULL, amount REAL, due_date TEXT, done INTEGER DEFAULT 0, notes TEXT);
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS attachments (id INTEGER PRIMARY KEY AUTOINCREMENT, entity TEXT NOT NULL, record_id INTEGER NOT NULL, filename TEXT NOT NULL,
-  stored_path TEXT NOT NULL, mime TEXT, size INTEGER, caption TEXT, created_at TEXT NOT NULL);
+  stored_path TEXT NOT NULL, mime TEXT, size INTEGER, caption TEXT, created_at TEXT NOT NULL, taken_at TEXT);
 CREATE INDEX IF NOT EXISTS idx_attachments_record ON attachments (entity, record_id);`;
-  const MIGRATIONS = [["units", "parent_unit_id", "INTEGER REFERENCES units(id) ON DELETE SET NULL"], ["tenants", "co_tenant", "TEXT"], ["leases", "deposit_installments", "INTEGER DEFAULT 1"]];
+  const MIGRATIONS = [["units", "parent_unit_id", "INTEGER REFERENCES units(id) ON DELETE SET NULL"], ["tenants", "co_tenant", "TEXT"], ["leases", "deposit_installments", "INTEGER DEFAULT 1"], ["attachments", "taken_at", "TEXT"], ["meters", "supplier", "TEXT"]];
   const DEFAULT_SETTINGS = { tracking_start: "2025-02", rent_grace_days: "5", rent_control_hash: "", rent_control_read: "" };
   const ATTACHABLE = ["buildings", "units", "meters", "meter_readings", "tenants", "leases", "settlements", "payments"];
   const ALLOWED_EXT = [".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic", ".pdf"];
@@ -70,8 +70,8 @@ class ServerBackend {
     if (!res.ok) throw new Error(data.error || "Error " + res.status);
     return data;
   }
-  async upload(entity, recordId, blob, name, caption) {
-    const res = await fetch(`api/attachments?entity=${entity}&record_id=${recordId}${caption ? "&caption=" + encodeURIComponent(caption) : ""}`,
+  async upload(entity, recordId, blob, name, caption, takenAt) {
+    const res = await fetch(`api/attachments?entity=${entity}&record_id=${recordId}${caption ? "&caption=" + encodeURIComponent(caption) : ""}${takenAt ? "&taken_at=" + encodeURIComponent(takenAt) : ""}`,
       { method: "POST", headers: { "X-Filename": encodeURIComponent(name), "Content-Type": blob.type || "application/octet-stream" }, body: blob });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || "Upload failed");
@@ -315,8 +315,35 @@ class LocalBackend {
     if (table === "reminders" && !["settlement", "date"].includes(d.kind)) throw new ApiError(400, "Unknown reminder type.");
   }
 
-  // ---------- attachments (files live in <data folder>/files/<entity>/<id>/ – same layout as the PC version)
-  async upload(entity, recordId, blob, name, caption) {
+  /** Meter photos: "<tenant>_Meter<id>_(<reading date>)_<meter type>.<ext>" directly in files/meters/ (same rule as server.py meter_file_name) */
+  _meterFileName(entity, recordId, ext, takenAt) {
+    let meterId, date;
+    if (entity === "meter_readings") {
+      const r = this._one("SELECT meter_id, reading_date FROM meter_readings WHERE id=?", [recordId]);
+      meterId = r.meter_id; date = r.reading_date;
+    } else {
+      meterId = recordId;
+      const last = this._one("SELECT MAX(reading_date) AS d FROM meter_readings WHERE meter_id=?", [meterId]);
+      date = (takenAt || "").slice(0, 10) || (last && last.d) || new Date().toISOString().slice(0, 10);
+    }
+    const m = this._one("SELECT m.*, b.code AS bcode FROM meters m JOIN buildings b ON b.id=m.building_id WHERE m.id=?", [meterId]);
+    let who;
+    if (!m.unit_id) who = (m.bcode || "Building") + "-Common";
+    else {
+      const t = this._one(`SELECT t.first_name, t.last_name, t.company FROM leases l JOIN tenants t ON t.id=l.tenant_id
+        WHERE l.unit_id=? AND l.start_date<=? AND (l.end_date IS NULL OR l.end_date>=?) ORDER BY l.start_date DESC LIMIT 1`, [m.unit_id, date, date]);
+      who = t ? (t.company || [t.first_name, t.last_name].filter(Boolean).join(" ")) : "Vacant";
+    }
+    const part = (s) => String(s || "").replace(/[^\p{L}\p{N}_.\- ]+/gu, " ").trim().replace(/\s+/g, "-") || "x";
+    const base = `meters/${part(who)}_Meter${meterId}_(${date})_${part(m.meter_type)}`;
+    const used = new Set(this._all("SELECT stored_path FROM attachments WHERE stored_path LIKE ?", [base + "%"]).map((r) => r.stored_path));
+    let rel = base + ext;
+    for (let i = 2; used.has(rel); i++) rel = `${base}_${i}${ext}`;
+    return rel;
+  }
+
+  // ---------- attachments (files live in <data folder>/files/<entity>/<id>/, meter photos in files/meters/ – same layout as the PC version)
+  async upload(entity, recordId, blob, name, caption, takenAt) {
     if (!PA_SCHEMA.ATTACHABLE.includes(entity)) throw new Error("Attachments are not possible for this record type.");
     if (!this._one(`SELECT 1 AS x FROM ${entity} WHERE id=?`, [Number(recordId)])) throw new Error("Record not found.");
     let safe = (name || "file").split(/[\\/]/).pop().replace(/[^\w.\- ]+/g, "_").trim() || "file";
@@ -327,11 +354,14 @@ class LocalBackend {
     const d = new Date(), pad = (n) => String(n).padStart(2, "0");
     const stamp = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
     const rand = Math.random().toString(16).slice(2, 6).padEnd(4, "0");
-    const rel = `${entity}/${recordId}/${stamp}_${rand}_${safe}`;
+    takenAt = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/.test(takenAt || "") ? takenAt : null;
+    const meterFile = entity === "meters" || entity === "meter_readings";
+    const rel = meterFile ? this._meterFileName(entity, Number(recordId), ext, takenAt) : `${entity}/${recordId}/${stamp}_${rand}_${safe}`;
+    if (meterFile) safe = rel.split("/").pop();
     await this.store.putFile("files/" + rel, blob);
     const mime = blob.type || ({ ".pdf": "application/pdf", ".png": "image/png", ".gif": "image/gif", ".webp": "image/webp", ".heic": "image/heic" }[ext] || "image/jpeg");
-    this._run("INSERT INTO attachments (entity, record_id, filename, stored_path, mime, size, caption, created_at) VALUES (?,?,?,?,?,?,?,?)",
-      [entity, Number(recordId), safe, rel, mime, blob.size, caption || null, new Date().toISOString().slice(0, 19)]);
+    this._run("INSERT INTO attachments (entity, record_id, filename, stored_path, mime, size, caption, created_at, taken_at) VALUES (?,?,?,?,?,?,?,?,?)",
+      [entity, Number(recordId), safe, rel, mime, blob.size, caption || null, new Date().toISOString().slice(0, 19), takenAt]);
     const row = this._one("SELECT * FROM attachments WHERE id=?", [this._lastId()]);
     this._changed();
     await this.save(); // keep database and files consistent right away

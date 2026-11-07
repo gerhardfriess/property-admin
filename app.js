@@ -150,8 +150,39 @@ function askConfirm(message, okLabel = "Delete") {
 const ATTACHABLE = ["buildings", "units", "meters", "tenants", "leases", "settlements", "payments"];
 const attachmentsOf = (entity, id) => db.attachments.filter((a) => a.entity === entity && a.record_id === Number(id));
 const isImage = (a) => (a.mime || "").startsWith("image/") && !/heic/i.test(a.mime);
+/** Capture date from the JPEG EXIF block (DateTimeOriginal, else DateTime) as "YYYY-MM-DDTHH:MM:SS", or null.
+ *  Read before downscaling – the canvas re-encode drops all EXIF data. */
+async function exifTakenAt(file) {
+  try {
+    if (!/jpe?g$/i.test(file.type) && !/\.jpe?g$/i.test(file.name || "")) return null;
+    const v = new DataView(await file.slice(0, 256 * 1024).arrayBuffer());
+    if (v.getUint16(0) !== 0xffd8) return null;
+    let p = 2;
+    while (p + 4 < v.byteLength) {
+      const marker = v.getUint16(p), len = v.getUint16(p + 2);
+      if (marker === 0xffe1 && v.getUint32(p + 4) === 0x45786966) { // "Exif"
+        const t = p + 10, le = v.getUint16(t) === 0x4949;
+        const u16 = (o) => v.getUint16(t + o, le), u32 = (o) => v.getUint32(t + o, le);
+        const readIfd = (off) => { const out = {}; const n = u16(off); for (let i = 0; i < n; i++) { const e = off + 2 + i * 12; out[u16(e)] = { type: u16(e + 2), count: u32(e + 4), val: u32(e + 8) }; } return out; };
+        const str = (e) => { let s = ""; for (let i = 0; i < Math.min(e.count, 32); i++) { const c = v.getUint8(t + e.val + i); if (!c) break; s += String.fromCharCode(c); } return s; };
+        const ifd0 = readIfd(u32(4));
+        const sub = ifd0[0x8769] ? readIfd(ifd0[0x8769].val) : {};
+        const raw = (sub[0x9003] && str(sub[0x9003])) || (sub[0x9004] && str(sub[0x9004])) || (ifd0[0x0132] && str(ifd0[0x0132])) || "";
+        const m = /^(\d{4}):(\d{2}):(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/.exec(raw);
+        return m && m[1] !== "0000" ? `${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}` : null;
+      }
+      if ((marker & 0xff00) !== 0xff00 || marker === 0xffda) return null;
+      p += 2 + len;
+    }
+  } catch { /* no readable EXIF */ }
+  return null;
+}
 /** Downscale photos before uploading (phone pictures are often 4–8 MB). */
 async function prepareFile(file) {
+  const takenAt = await exifTakenAt(file);
+  return { ...(await shrinkFile(file)), takenAt };
+}
+async function shrinkFile(file) {
   if (!/^image\/(jpeg|png|webp)$/.test(file.type) || file.size < 1.5e6) return { blob: file, name: file.name };
   try {
     const bmp = await createImageBitmap(file);
@@ -165,8 +196,8 @@ async function prepareFile(file) {
 }
 async function uploadFiles(entity, recordId, files, caption) {
   for (const file of files) {
-    const { blob, name } = await prepareFile(file);
-    await Backend.upload(entity, recordId, blob, name, caption);
+    const { blob, name, takenAt } = await prepareFile(file);
+    await Backend.upload(entity, recordId, blob, name, caption, takenAt);
   }
 }
 const PIXEL = "data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==";
@@ -239,7 +270,7 @@ new MutationObserver(() => enhanceDates()).observe(document.body, { childList: t
 function attachmentTiles(list, deletable = true) {
   return list.map((a) => `<div class="att">
       <a ${attHref(a)} target="_blank" rel="noopener" title="${esc(a.filename)}">${isImage(a) ? `<img ${attSrc(a)} loading="lazy" alt="">` : `<span class="att-file">${icon("file", 28)}<span>${esc(a.filename.split(".").pop().toUpperCase())}</span></span>`}</a>
-      <div class="att-name" title="${esc(a.filename)}">${esc(a.caption || a.filename.replace(/^\d{8}-\d{6}_[0-9a-f]{4}_/, ""))}</div>
+      <div class="att-name" title="${esc(a.filename + (a.taken_at ? ` · taken ${fmtDate(a.taken_at.slice(0, 10))} ${a.taken_at.slice(11, 16)}` : ""))}">${esc(a.caption || a.filename.replace(/^\d{8}-\d{6}_[0-9a-f]{4}_/, ""))}</div>
       ${deletable ? `<button class="att-del" data-del-att="${a.id}" title="Delete ${isImage(a) ? "photo" : "file"}">${icon(isImage(a) ? "imageX" : "x", 16)}</button>` : ""}</div>`).join("");
 }
 function attachmentsBlock(entity, record) {
@@ -517,6 +548,7 @@ const ENTITIES = {
       { key: "number", label: "Meter number", hint: "can be added later" },
       { key: "measure_unit", label: "Unit of measure", list: ["m³", "kWh", "MWh", "units"] },
       { key: "location", label: "Location", list: ["Basement", "Bathroom", "Kitchen", "Hallway", "Laundry room", "Boiler room", "Storage cellar", "Outside"] },
+      { key: "supplier", label: "Supplier", list: () => [...new Set(db.meters.map((m) => m.supplier).filter(Boolean))].sort() },
       { key: "active", label: "Meter active", type: "checkbox", default: 1 },
       { key: "notes", label: "Notes", type: "textarea", full: true },
     ],
@@ -526,6 +558,7 @@ const ENTITIES = {
       { label: "Number", value: (r) => (r.number ? `<strong>${esc(r.number)}</strong>` : '<span class="pill free">missing</span>') },
       { label: "Unit", value: (r) => esc(r.measure_unit || "") },
       { label: "Location", value: (r) => esc(r.location || "") },
+      { label: "Supplier", value: (r) => esc(r.supplier || "") },
       { label: "Last reading", value: (r) => { const l = lastReading(r); const d = meterDocIcon(r); return (l ? fmtDate(l.reading_date) : '<span class="muted">–</span>') + (d ? " " + d : ""); } },
       { label: "Status", value: (r) => (r.active ? '<span class="pill ok">active</span>' : '<span class="pill grey">inactive</span>') },
     ],
@@ -880,7 +913,7 @@ function fieldHtml(f, values) {
   const type = f.type === "number" ? "text" : (f.type || "text");
   const mode = f.type === "number" ? ' inputmode="decimal"' : "";
   const list = f.list ? ` list="dl_${f.key}"` : "";
-  const dl = f.list ? `<datalist id="dl_${f.key}">${f.list.map((o) => `<option value="${esc(o)}">`).join("")}</datalist>` : "";
+  const dl = f.list ? `<datalist id="dl_${f.key}">${(typeof f.list === "function" ? f.list() : f.list).map((o) => `<option value="${esc(o)}">`).join("")}</datalist>` : "";
   return `<div class="${cls}">${label}<input class="input" type="${type}"${mode}${list} id="${id}" name="${f.key}" value="${esc(v)}">${dl}${hint}</div>`;
 }
 
