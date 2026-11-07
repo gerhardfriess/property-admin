@@ -333,6 +333,11 @@ tr.subgroup td { background: color-mix(in srgb, var(--uc) 9%, #fff); border-left
 tr.subgroup td > * { vertical-align: middle; }
 tr.subgroup .right { float: right; }
 tr.subgroup .ic { vertical-align: -2px; }
+tr.fold { cursor: pointer; user-select: none; }
+tr.fold:hover td { filter: brightness(0.97); }
+.fold-chev { display: inline-block; margin-right: 4px; color: var(--muted); transition: transform .15s; }
+.fold-chev .ic { vertical-align: -3px; }
+.fold-chev.open { transform: rotate(90deg); }
 tr.in-sub td:first-child { border-left: 4px solid var(--uc); }
 
 /* ---------- Settings ---------- */

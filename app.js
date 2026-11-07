@@ -456,7 +456,25 @@ function computeReminders() {
 
 // ---------------------------------------------------------------- entities (Data Admin & Rent Control)
 const UNIT_TYPES = ["Apartment", "Commercial", "House", "Cellar", "Parking space", "Garage", "Garden", "Storage", "Other"];
-const METER_TYPES = { "Cold water": "m³", "Hot water": "m³", "Water (washing machine)": "m³", "Water (garden)": "m³", "Electricity": "kWh", "Electricity (common)": "kWh", "Gas": "m³", "Heat": "kWh", "Heat cost allocator": "units", "Other": "" };
+const METER_TYPES = { "Cold water": "m³", "Hot water": "m³", "Water (washing machine)": "m³", "Water (garden)": "m³", "Electricity": "kWh", "Electricity (common)": "kWh", "Gas": "m³", "Heat": "kWh", "Heat cost allocator": "units", "Smoke detector": "", "Other": "" };
+// Small inline icons shown in front of the meter type (Data Admin → Meters).
+const METER_ICON_SVG = {
+  snow: ["#2b8fd6", '<path d="M12 2v20M3.3 7l17.4 10M3.3 17L20.7 7M9 4l3 2 3-2M9 20l3-2 3 2"/>'],
+  flame: ["#e0522b", '<path d="M12 22c4 0 7-2.7 7-6.6 0-3.3-2.2-5.6-3.6-7.4-.4 1.8-1.4 3-2.6 3.4.2-3.4-1.3-6.6-4.3-8.4.3 3.2-1.6 5.3-3 7.2C4.4 11.8 5 13.7 5 15.4 5 19.3 8 22 12 22z"/>'],
+  bolt: ["#e5a50a", '<path d="M13 2L4 14h7l-1 8 9-12h-7l1-8z"/>'],
+  washer: ["#6a5acd", '<rect x="4" y="2" width="16" height="20" rx="2"/><circle cx="12" cy="13" r="5"/><path d="M7 6h2M13 6h4"/>'],
+  drop: ["#2e9e4f", '<path d="M12 2.5S5.5 10 5.5 14.5a6.5 6.5 0 0 0 13 0C18.5 10 12 2.5 12 2.5z"/>'],
+  smoke: ["#6b7280", '<path d="M7 22c-2-2.5 2-4.5 0-7s2-4.5 0-7"/><path d="M12 22c-2-2.5 2-4.5 0-7s2-4.5 0-7 2-4 0-6"/><path d="M17 22c-2-2.5 2-4.5 0-7s2-4.5 0-7"/>'],
+  gas: ["#3b6fd6", '<path d="M12 22c4 0 7-2.7 7-6.6 0-3.3-2.2-5.6-3.6-7.4-.4 1.8-1.4 3-2.6 3.4.2-3.4-1.3-6.6-4.3-8.4.3 3.2-1.6 5.3-3 7.2C4.4 11.8 5 13.7 5 15.4 5 19.3 8 22 12 22z"/>'],
+};
+const meterIcon = (type) => {
+  const t = (type || "").toLowerCase();
+  const k = t.includes("smoke") ? "smoke" : t.includes("washing") ? "washer" : t.includes("garden") ? "drop" : t.includes("cold") ? "snow"
+    : t.includes("hot") || t.includes("heat") ? "flame" : t.includes("electric") ? "bolt" : t.includes("gas") ? "gas" : null;
+  if (!k) return "";
+  const [color, body] = METER_ICON_SVG[k];
+  return `<svg class="meter-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="${color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-3px;margin-right:6px">${body}</svg>`;
+};
 const optionsFrom = (arr) => arr.map((v) => ({ value: v, label: v }));
 const meterTypeOptions = () => optionsFrom([...new Set([...Object.keys(METER_TYPES), ...db.meters.map((m) => m.meter_type)])]);
 const buildingOptions = () => db.buildings.map((b) => ({ value: b.id, label: buildingLabel(b) }));
@@ -554,7 +572,7 @@ const ENTITIES = {
     ],
     columns: [
       { label: "Assigned to", hideMobile: true, value: (r) => (r.unit_id ? esc(byId("units", r.unit_id)?.code) : '<span class="muted">Common</span>') },
-      { label: "Meter type", value: (r) => esc(r.meter_type) },
+      { label: "Meter type", value: (r) => meterIcon(r.meter_type) + esc(r.meter_type) },
       { label: "Number", value: (r) => (r.number ? `<strong>${esc(r.number)}</strong>` : '<span class="pill free">missing</span>') },
       { label: "Unit", value: (r) => esc(r.measure_unit || "") },
       { label: "Location", value: (r) => esc(r.location || "") },
@@ -842,22 +860,28 @@ function renderEntityList(key) {
     if (groupOf) {
       const sections = [...db.buildings.map((b) => ({ id: b.id, label: buildingShort(b) })), { id: null, label: key === "tenants" ? "Without lease" : "Without building" }];
       const subOf = SUBGROUP_BY[key];
+      // Meters: building → unit → meters, each level folds open on click (all open while searching).
+      const foldable = !!subOf, opened = (st.open ||= new Set());
+      const isOpen = (k) => !!q || opened.has(k);
+      const chev = (open) => `<span class="fold-chev${open ? " open" : ""}">${icon("chevronRight", 16)}</span>`;
       const subSections = (bid, rs) => {
         if (!subOf) return rs.map(rowHtml).join("");
         const order = orderedUnits(bid);
         return [...order.map((u) => u.id), null].map((uid) => {
           const sub = rs.filter((r) => (subOf(r) ?? null) === uid);
           if (!sub.length) return "";
+          const fk = `u:${bid}:${uid}`, open = isOpen(fk);
           const u = uid ? byId("units", uid) : null;
           const l = u && currentLease(u.id); const t = l && byId("tenants", l.tenant_id);
-          return `<tr class="subgroup" style="--uc:${unitColor(bid, uid)}"><td colspan="${ent.columns.length}"><span class="dot" style="background:var(--uc)"></span>
+          return `<tr class="subgroup${foldable ? " fold" : ""}" data-fold="${fk}" style="--uc:${unitColor(bid, uid)}"><td colspan="${ent.columns.length}">${foldable ? chev(open) : ""}<span class="dot" style="background:var(--uc)"></span>
             <strong>${u ? (u.parent_unit_id ? "↳ " : "") + esc(u.code) : "Common meters (building)"}</strong>${u ? ` <span class="muted">${esc(u.unit_type)}</span>` : ""}
             ${t ? `<span class="muted">· ${icon("user", 14)} ${esc(tenantName(t))}</span>` : ""}<span class="muted right">${sub.length}</span></td></tr>
-            ${sub.map((r) => rowHtml(r).replace('<tr class="clickable"', `<tr class="clickable in-sub" style="--uc:${unitColor(bid, uid)}"`)).join("")}`;
+            ${open ? sub.map((r) => rowHtml(r).replace('<tr class="clickable"', `<tr class="clickable in-sub" style="--uc:${unitColor(bid, uid)}"`)).join("") : ""}`;
         }).join("");
       };
       body = sections.map((s) => { const rs = rows.filter((r) => (groupOf(r) ?? null) === s.id);
-        return rs.length ? `<tr class="group"><td colspan="${ent.columns.length}">${icon("building", 16)} ${esc(s.label)} <span class="muted">(${rs.length})</span></td></tr>${subSections(s.id, rs)}` : ""; }).join("");
+        const fk = `b:${s.id}`, open = !foldable || isOpen(fk);
+        return rs.length ? `<tr class="group${foldable ? " fold" : ""}" data-fold="${fk}"><td colspan="${ent.columns.length}">${foldable ? chev(open) : ""}${icon("building", 16)} ${esc(s.label)} <span class="muted">(${rs.length})</span></td></tr>${open ? subSections(s.id, rs) : ""}` : ""; }).join("");
     } else body = rows.map(rowHtml).join("");
     $("#view").innerHTML = `
       <div class="card">
@@ -869,6 +893,10 @@ function renderEntityList(key) {
         </div>
       </div>`;
     $("#view").querySelectorAll("tr.clickable").forEach((tr) => (tr.onclick = () => openForm(key, byId(key, tr.dataset.id))));
+    $("#view").querySelectorAll("tr.fold").forEach((tr) => (tr.onclick = () => {
+      if (q) return; const k = tr.dataset.fold, o = st.open;
+      o.has(k) ? o.delete(k) : o.add(k); drawTable();
+    }));
     const en = $("#emptyNew"); if (en) en.onclick = () => openForm(key, null);
   }
   drawTable();
