@@ -1029,7 +1029,7 @@ function settlementNotesBlock(s) {
 }
 
 // ---------------------------------------------------------------- navigation
-// Three sections (bottom tab bar on phones, sidebar on PC) → sub-pages (chip row on phones).
+// Three sections (start page tiles, bottom tab bar on phones) → sub-pages (chip row).
 const NAV = [
   { group: "Overview", icon: "dashboard", items: [
     { id: "overview/rent", label: "Rental Income", icon: "banknote", render: renderRent },
@@ -1081,25 +1081,14 @@ function rememberSub(group, id) {
   try { localStorage.setItem("pa_last_sub", JSON.stringify(lastSub)); } catch {}
 }
 
-function renderNav(activeId, activeGroup) {
-  const countOf = (i) => (i.filter ? db[i.entity].filter(i.filter).length : db[i.entity].length);
-  // PC sidebar like the sketch: three section buttons; the active one unfolds its sub-pages below it
-  $("#nav").innerHTML = NAV.map((g) => { const open = g.group === activeGroup, gBadge = g.badge ? g.badge() : 0;
-    return `<div class="nav-group${open ? " open" : ""}">
-      <a class="nav-section${open ? " active" : ""}" href="#/${open ? g.items[0].id : lastSub[g.group] || g.items[0].id}">${icon(g.icon, 20)}<span>${esc(g.group)}</span>${gBadge && !open ? `<span class="nav-count alert">${gBadge}</span>` : ""}</a>
-      ${open ? `<div class="nav-subs">${g.items.map((i) => { const badge = i.badge ? i.badge() : 0;
-        return `<a class="nav-link ${activeId === i.id ? "active" : ""}" href="#/${i.id}">
-        <span class="nav-label">${icon(i.icon, 18)}<span>${esc(i.label)}</span></span>${badge ? `<span class="nav-count alert">${badge}</span>` : i.entity && !i.noCount ? `<span class="nav-count">${countOf(i)}</span>` : ""}</a>`; }).join("")}</div>` : ""}
-    </div>`; }).join("") + `<div class="nav-group nav-settings"><a class="nav-link ${activeId === SETTINGS_ITEM.id ? "active" : ""}" href="#/${SETTINGS_ITEM.id}"><span class="nav-label">${icon("settings", 18)}<span>Settings</span></span></a></div>`;
-}
-
 /** start page: one big tile per section (Overview / Rent Control / Data Setup) */
 function renderHome() {
   $("#crumb").textContent = "";
   $("#view").innerHTML = `<div class="home-tiles">${NAV.map((g) => { const badge = g.badge ? g.badge() : 0;
     return `<a class="home-tile" style="--h:${[200, 172, 228][NAV.indexOf(g)]}" href="#/${lastSub[g.group] || g.items[0].id}">
       <div class="ht-head">${icon(g.icon, 34)}<span class="ht-title">${esc(g.group)}</span>${badge ? `<span class="nav-count alert">${badge}</span>` : ""}</div>
-      <div class="ht-subs">${g.items.map((i) => `<span>${esc(i.label)}</span>`).join("")}</div></a>`; }).join("")}</div>`;
+      <div class="ht-subs">${g.items.map((i) => `<span>${esc(i.label)}</span>`).join("")}</div></a>`; }).join("")}</div>
+    ${phoneAccessHtml ? `<p class="home-foot muted">${phoneAccessHtml}</p>` : ""}`;
 }
 
 /** phone: bottom tab bar with the three sections */
@@ -1149,12 +1138,14 @@ const GROUP_BY = {
 };
 
 const pageState = {}; // remember filters per page
+let _lastRoute = "";
 function render() {
   const route = currentRoute();
+  if (route !== _lastRoute && route === "overview/rent") delete pageState.rent; // opened anew → default period
+  _lastRoute = route;
   const item = routeItem(route);
   const navId = item.parent || item.id;
   rememberSub(item.group, navId);
-  renderNav(navId, item.group);
   renderTabbar(item);
   renderSubnav(navId, item.group);
   $("#crumb").textContent = item.group;
@@ -1746,8 +1737,8 @@ const monthHead = (ym, i) => `${MONTHS[Number(ym.slice(5)) - 1]}${i === 0 || ym.
 
 // ---------------------------------------------------------------- Overview: rental income
 function renderRent() {
-  // only the period filter + three tiles (Net rent / Received / Expected); a tile opens its details right below it
-  const st = (pageState.rent ||= { from: thisMonth(), to: thisMonth(), detail: "" });
+  // only the period filter + tiles (Net rent / Expected net income / Received / Expected); a tile opens its details right below it
+  const st = (pageState.rent ||= { from: addMonths(thisMonth(), -11), to: thisMonth(), detail: "" }); // default: last 12 months
   $("#topActions").innerHTML = "";
 
   if (!db.leases.length) { $("#view").innerHTML = emptyHint("No leases yet – rental income is calculated from them.", "admin/leases", "Add leases"); return; }
@@ -1767,8 +1758,24 @@ function renderRent() {
   const color = (l) => unitColor(byId("units", l.unit_id).building_id, l.unit_id);
   const cardsBy = (sumOf, card) => `<div class="cgrid">${groups.map((g) => sectionHead(g.b, fmtMoney(sum(g.ls, sumOf))) + g.ls.map(card).join("")).join("")}</div>`;
 
+  // forecast (independent of the period filter): next 12 months from next month on
+  const fMonths = monthsBetween(addMonths(thisMonth(), 1), addMonths(thisMonth(), 12));
+  const fLeases = db.leases.filter((l) => byId("units", l.unit_id) && fMonths.some((ym) => leaseActiveInMonth(l, ym)));
+  const fMonthsOf = (l) => fMonths.filter((ym) => leaseActiveInMonth(l, ym)).length;
+  const fNet = (l) => (Number(l.cold_rent) || 0) * fMonthsOf(l);
+  const forecast = sum(fLeases, fNet);
+  const fEnding = fLeases.filter((l) => fMonthsOf(l) < 12);
+  const fVacant = db.units.filter((u) => RENTABLE.includes(u.unit_type) && !fMonths.some((ym) => db.leases.some((l) => l.unit_id === u.id && leaseActiveInMonth(l, ym))));
+  const fLabel = rangeLabel(fMonths[0], fMonths[11]);
+  const fGroups = db.buildings.map((b) => ({ b, ls: fLeases.filter((l) => byId("units", l.unit_id)?.building_id === b.id).sort(cmpLeasesByUnit) })).filter((g) => g.ls.length);
+
   // ---- details behind each tile
   const details = {
+    forecast: () => `<p class="rd-intro muted">Base rent (without prepayments) the current leases bring in over ${fLabel}, Ø <strong>${fmtMoney(forecast / 12)}</strong> per month.
+        Leases ending in this time count only until their end${fVacant.length ? `; <strong>${fVacant.length}</strong> vacant unit(s) not included` : ""}.</p>
+      <div class="cgrid">${fGroups.map((g) => sectionHead(g.b, fmtMoney(sum(g.ls, fNet))) + g.ls.map((l) => { const n = fMonthsOf(l);
+        return ucard({ title: unitTitle(l), sub: tenantSub(l), metas: [metaKV("Per month", fmtMoney(l.cold_rent)), n < 12 ? metaKV("Months", `${n} of 12`) : "", l.end_date ? metaKV("Ends", fmtDate(l.end_date)) : ""],
+          side: `<strong>${fmtMoney(fNet(l))}</strong>${n < 12 ? '<span class="pill free">ends</span>' : ""}`, color: color(l), attrs: `data-lease="${l.id}"` }); }).join("")).join("")}</div>`,
     net: () => `<p class="rd-intro muted">Base rent without prepayments${multi ? " – sums over the selected months" : ""}. On top: <strong>${fmtMoney(total - cold)}</strong> prepayments / other.</p>
       ${cardsBy((l) => exp(l, (x) => x.cold_rent), (l) => { const u = byId("units", l.unit_id), n = exp(l, (x) => x.cold_rent);
         return ucard({ title: unitTitle(l), sub: tenantSub(l), metas: [u.area ? metaKV("€/m²", fmtNum(l.cold_rent / u.area, 2)) : "", u.area ? metaKV("Area", fmtNum(u.area) + " m²") : "", multi ? metaKV("Months", activeMonths(l)) : ""],
@@ -1798,7 +1805,7 @@ function renderRent() {
   };
 
   const tile = (key, cls, title, value, sub) => `
-    <button type="button" class="rtile ${cls}${st.detail === key ? " open" : ""}" style="--h:${{ net: 140, received: 210, expected: 38 }[key]}" data-detail="${key}" aria-expanded="${st.detail === key}">
+    <button type="button" class="rtile ${cls}${st.detail === key ? " open" : ""}" style="--h:${{ net: 140, forecast: 168, received: 210, expected: 38 }[key]}" data-detail="${key}" aria-expanded="${st.detail === key}">
       <span class="rt-text"><span class="rt-label">${title}</span><span class="rt-value">${value}</span><span class="rt-sub">${sub}</span></span>
       <span class="rt-chev">${icon("chevronRight", 22)}</span></button>
     ${st.detail === key ? `<div class="rdetail">${details[key]()}</div>` : ""}`;
@@ -1806,6 +1813,8 @@ function renderRent() {
   $("#view").innerHTML = `<div class="sticky-top">${monthRangeHtml(st)}</div>
     <div class="rtiles">
       ${tile("net", "rt-net", `Net rent ${label}`, fmtMoney(cold), `${fmtMoney(total - cold)} prepayments / other on top`)}
+      ${tile("forecast", "rt-forecast", "Expected net income – next 12 months", fmtMoney(forecast),
+        `Ø ${fmtMoney(forecast / 12)} per month · ${fLabel}${fEnding.length ? ` · ${fEnding.length} lease(s) ending` : ""}${fVacant.length ? ` · ${fVacant.length} vacant` : ""}`)}
       ${tile("received", "rt-received", `Received ${label}`, fmtMoney(received),
         missing > 0.009 ? `<span class="rt-miss">${fmtMoney(missing)} not yet received</span>` : "fully received")}
       ${tile("expected", "rt-expected", `Expected ${label}`, fmtMoney(total), `incl. prepayments${multi ? ` · Ø ${fmtMoney(total / yms.length)} per month` : ""} · ${leases.length} lease(s)`)}
@@ -1865,65 +1874,6 @@ function renderTenantsUnits() {
 
   bindCards(".ttile[data-tenant]", (c) => (location.hash = `#/overview/tenants/${c.dataset.tenant}`));
   bindCards(".ttile.vacant", (c) => openForm("units", byId("units", c.dataset.unit)));
-}
-
-// ---------------------------------------------------------------- Overview: meter data
-const UNIT_CATEGORY = { Apartment: "apt", House: "apt", Commercial: "com" };
-const CATEGORY_LABEL = { apt: "Apartment", com: "Commercial", anc: "Ancillary", common: "Common / building" };
-const unitCategory = (u) => (u ? UNIT_CATEGORY[u.unit_type] || "anc" : "common");
-
-function renderMeterData() {
-  const st = (pageState.md ||= { building: "", type: "", cat: "" });
-  const catBtn = (val, label) => `<button type="button" class="seg-btn ${st.cat === val ? "active" : ""}" data-cat="${val}">${val ? `<span class="dot ${val}"></span>` : ""}<span>${label}</span></button>`;
-  $("#topActions").innerHTML = `<div class="filters">${buildingFilterHtml(st)}
-    <div class="seg" role="group" aria-label="Category">${catBtn("", "All units")}${catBtn("apt", "Apartments")}${catBtn("com", "Commercial")}${catBtn("common", "Common")}</div>
-    <select class="input" id="flt_type" title="Meter type"><option value="">All meter types</option>
-      ${[...new Set(db.meters.map((m) => m.meter_type))].sort().map((t) => `<option ${t === st.type ? "selected" : ""}>${esc(t)}</option>`).join("")}</select></div>`;
-  bindBuildingFilter(st, renderMeterData);
-  document.querySelectorAll("#topActions [data-cat]").forEach((b) => (b.onclick = () => { st.cat = b.dataset.cat; renderMeterData(); }));
-  $("#flt_type").onchange = (e) => { st.type = e.target.value; renderMeterData(); };
-
-  if (!db.meters.length) { $("#view").innerHTML = emptyHint("No meters yet.", "admin/meters", "Add meters"); return; }
-
-  const readingsOf = (m) => db.meter_readings.filter((r) => r.meter_id === m.id).sort((a, b) => b.reading_date.localeCompare(a.reading_date));
-  const yearAgo = new Date(Date.now() - 365 * 864e5).toISOString().slice(0, 10);
-  const isStale = (m) => m.active && (!readingsOf(m)[0] || readingsOf(m)[0].reading_date < yearAgo);
-  const visible = db.meters.filter((m) => (!st.type || m.meter_type === st.type) && (!st.cat || unitCategory(byId("units", m.unit_id)) === st.cat));
-
-  // building → unit sections (main units first, ancillary units below their main unit, common meters last)
-  const sections = filterBuildings(st).map((b) => {
-    const ordered = orderedUnits(b.id);
-    const units = ordered.map((u) => ({ u, meters: visible.filter((m) => m.unit_id === u.id) }))
-      .concat([{ u: null, meters: visible.filter((m) => m.building_id === b.id && !m.unit_id) }])
-      .filter((x) => x.meters.length);
-    return { b, units };
-  }).filter((s) => s.units.length);
-
-  const mcard = (m, color) => { const rs = readingsOf(m); const last = rs[0], prev = rs[1]; const u = esc(m.measure_unit || "");
-    return ucard({ title: `${meterIcon(m.meter_type)}${esc(m.meter_type)} ${m.number ? `<span class="muted">${esc(m.number)}</span>` : '<span class="pill free">no number</span>'}`,
-      metas: [metaKV("Location", esc(m.location || "")), last && prev ? metaKV("Consumption", `${fmtNum(last.value - prev.value)} ${u}`) : "", meterDocIcon(m)],
-      side: last ? `<strong>${fmtNum(last.value)} ${u}</strong><span class="muted">${fmtDate(last.reading_date)}</span>` : '<span class="pill free">no reading</span>',
-      actions: `<button type="button" class="btn small" data-read="${m.id}">${icon("plus", 16)} Reading</button>${m.active ? "" : ' <span class="pill grey">inactive</span>'}${isStale(m) && last ? ' <span class="pill free">reading due</span>' : ""}`,
-      color, attrs: `data-meter="${m.id}"`, cls: m.active ? "" : "minor" }); };
-
-  $("#view").innerHTML = `
-    <div class="kpis">
-      <div class="kpi"><div class="kpi-label">Meters</div><div class="kpi-value">${db.meters.length}</div><div class="kpi-sub">${db.meters.filter((m) => m.active).length} active</div></div>
-      <div class="kpi"><div class="kpi-label">Readings recorded</div><div class="kpi-value">${db.meter_readings.length}</div><div class="kpi-sub">${db.attachments.filter((a) => a.entity === "meter_readings").length} with photo</div></div>
-      <div class="kpi"><div class="kpi-label">Reading due</div><div class="kpi-value">${db.meters.filter(isStale).length}</div><div class="kpi-sub">active, no reading in the last 12 months</div></div>
-    </div>
-    ${sections.length ? `<div class="cgrid">${sections.map((s) => sectionHead(s.b, `${sum(s.units, (x) => x.meters.length)} meters`) + s.units.map(({ u, meters }) => {
-      const cat = unitCategory(u), l = u && currentLease(u.id), t = l && byId("tenants", l.tenant_id), c = unitColor(s.b.id, u?.id);
-      return `<div class="mc-sub"><span class="dot" style="background:${c}"></span>${u ? (isAncillary(u) ? "↳ " : "") + esc(u.code) : "Common meters (building)"}
-        <span class="cat-pill ${cat}">${CATEGORY_LABEL[cat]}</span>${t ? `<span class="muted">${icon("user", 14)} ${esc(tenantName(t))}</span>` : u && RENTABLE.includes(u.unit_type) ? '<span class="pill free">vacant</span>' : ""}</div>
-        ${meters.sort((a, b) => a.meter_type.localeCompare(b.meter_type)).map((m) => mcard(m, c)).join("")}`; }).join("")).join("")}</div>`
-      : '<div class="card"><div class="empty">No meters for this selection.</div></div>'}`;
-  const openMeter = (id, focus) => {
-    openForm("meters", byId("meters", id));
-    if (focus) setTimeout(() => { const v = $("#rd_value"); if (v) { v.scrollIntoView({ block: "center" }); v.focus(); } }, 220);
-  };
-  bindCards("[data-meter]", (c) => openMeter(c.dataset.meter, false));
-  $("#view").querySelectorAll("[data-read]").forEach((b) => (b.onclick = () => openMeter(b.dataset.read, true)));
 }
 
 // ---------------------------------------------------------------- Rent Control: reminders
@@ -2538,11 +2488,15 @@ window.addEventListener("hashchange", () => { closeDrawer(); render(); });
 $("#drawerClose").innerHTML = icon("x", 20);
 $(".brand-icon").outerHTML = `<span class="brand-icon">${icon("home", 22)}</span>`;
 
+let phoneAccessHtml = "";
 async function showPhoneAccess() {
   if (Backend.mode !== "server") return;
   try {
     const info = await api("GET", "info");
-    if (info.lan && info.urls.length) $(".sidebar-foot").innerHTML = `${icon("smartphone", 16)} Phone access (same Wi-Fi):<br><a href="${esc(info.urls[0])}" target="_blank">${esc(info.urls[0].replace(/\?key=.*/, ""))}</a><br>PIN <strong>${esc(info.pin)}</strong>`;
+    if (info.lan && info.urls.length) {
+      phoneAccessHtml = `${icon("smartphone", 16)} Phone access (same Wi-Fi): <a class="link" href="${esc(info.urls[0])}" target="_blank">${esc(info.urls[0].replace(/\?key=.*/, ""))}</a> · PIN <strong>${esc(info.pin)}</strong>`;
+      if (currentRoute() === "home") render();
+    }
   } catch { /* ignore */ }
 }
 
@@ -2717,7 +2671,6 @@ async function boot() {
     }
     hideGate();
     Backend.onStatus((st) => {
-      $(".sidebar-foot").innerHTML = syncStatusHtml(st);
       $("#syncMini").innerHTML = syncStatusHtml(st);
       if (st.state === "conflict" && !boot._conflictShown) { boot._conflictShown = true; toast("The data was changed elsewhere – see Settings", true); location.hash = "#/admin/settings"; }
       if (st.state === "saved") boot._conflictShown = false;
@@ -2748,7 +2701,5 @@ new MutationObserver(() => { cancelAnimationFrame(_hueTimer); _hueTimer = reques
 // header buttons (phones navigate with the bottom tab bar + the chip row of sub-pages)
 $("#backBtn").innerHTML = `${icon("arrowLeft", 20)}<span>Back</span>`;
 $("#settingsBtn").innerHTML = icon("settings", 22);
-$("#navBackdrop").onclick = () => document.body.classList.remove("nav-open");
-window.addEventListener("hashchange", () => document.body.classList.remove("nav-open"));
 
 boot();
