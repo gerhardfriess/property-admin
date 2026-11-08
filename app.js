@@ -323,7 +323,7 @@ function bindAttachments(root, after) {
 }
 
 // ---------------------------------------------------------------- rent control logic
-const CATEGORIES = { rent: "Rent", service: "Service charges", settlement: "Utility settlement", deposit: "Deposit" };
+const CATEGORIES = { rent: "Net rent", service: "Prepayment", settlement: "Utility settlement", deposit: "Tenant's security deposit" };
 const trackingStart = () => db.settings.tracking_start || "2025-01";
 const graceDays = () => Number(db.settings.rent_grace_days || 5);
 
@@ -1944,8 +1944,9 @@ function renderPayments() {
     const got = paid(l, ym, c), exp = expected(l, ym, c);
     const later = s === "ok" && exp && got < exp - 0.009; // installment settled by payments in other months
     const open = c === "settlement" || c === "deposit" ? cumulativeOutstanding(l, c, "9999-12") : 0;
-    const tip = `${CATEGORIES[c]} ${fmtMonth(ym)} – expected ${fmtMoney(exp)}, received ${fmtMoney(got)}${later ? " (settled by payments in other months)" : ""}${s === "partial" && !exp && open > 0.009 ? ` – catch-up payment, still open ${fmtMoney(open)}` : ""}`;
-    const txt = got ? fmtAmt(got) : s === "overdue" ? "!" : later ? "✓" : s === "none" ? "" : "·";
+    const tip = `${CATEGORIES[c]} ${fmtMonth(ym)} – expected ${fmtMoney(exp)}, received ${fmtMoney(got)}${later ? " (settled by payments in other months)" : ""}${s === "partial" && !exp && open > 0.009 ? ` – catch-up payment, still open ${fmtMoney(open)}` : ""}${s === "overdue" && open > 0.009 ? ` – still open ${fmtMoney(open)}` : ""}`;
+    // settlements / deposits: show the amount due in its month (red while open, green once settled later)
+    const txt = got ? fmtAmt(got) : s === "overdue" ? (open > 0.009 && exp ? fmtAmt(exp) : "!") : later ? fmtAmt(exp) : s === "none" ? "" : "·";
     return `<td class="pc ${s}" title="${esc(tip)}" data-l="${l.id}" data-ym="${ym}" data-c="${c}">${txt}</td>`;
   };
 
