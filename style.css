@@ -823,3 +823,35 @@ a.btn { text-decoration: none; }
 .rtile.open { border-bottom-left-radius: 18px; border-bottom-right-radius: 18px; }
 .mcard, .pcard { border-radius: 14px; }
 @media (max-width: 820px) { .ttile { border-radius: 16px; } }
+
+/* ---------- Soft hue on every tile and card (2026-11-08) ---------- */
+.hued { background: linear-gradient(160deg, hsl(var(--h) 45% 97%), hsl(var(--h) 38% 93%)); border-color: hsl(var(--h) 28% 86%); }
+.hued:hover { box-shadow: 0 6px 18px hsl(var(--h) 30% 40% / .16); }
+.mcard.hued, .pcard.hued { border-left-color: hsl(var(--h) 38% 55%); }
+.mcard.hued .mc-title, .pcard.hued .pc-title { color: hsl(var(--h) 35% 22%); }
+.mcard.hued .muted, .pcard.hued .muted { color: hsl(var(--h) 15% 40%); }
+.mcard.hued > .ic { color: hsl(var(--h) 20% 60%); }
+.hued .pill.ok, .hued .pill.grey, .hued .pill.free, .hued .pc.ok { background-color: rgba(255,255,255,.75); }
+.hued .btn:not(.primary) { background: rgba(255,255,255,.8); border-color: hsl(var(--h) 25% 82%); }
+.hued .mchip.none { background: rgba(255,255,255,.6); }
+/* warnings stay red */
+.mcard.hued.warn, .pcard.hued.late { border-left-color: var(--danger); }
+.pcard.hued.vacant { background: #f4f6f8; border: 1px dashed #c9d2db; border-left: 4px solid #c9d2db; }
+
+/* Rental Income tiles */
+.rtile.hued { border-left-color: hsl(var(--h) 40% 45%); }
+.rtile.hued .rt-label { color: hsl(var(--h) 25% 30%); }
+.rtile.hued .rt-sub { color: hsl(var(--h) 12% 40%); }
+.rtile.hued.rt-net .rt-value { color: var(--ok); }
+.rtile.hued.rt-received .rt-value { color: var(--accent); }
+.rtile.hued.rt-expected .rt-value { color: hsl(var(--h) 45% 28%); }
+.rtile.hued .rt-miss { color: var(--miss); }
+
+/* Start page tiles */
+.home-tile.hued { color: hsl(var(--h) 40% 20%); border: 1px solid hsl(var(--h) 30% 80%);
+  background: linear-gradient(160deg, hsl(var(--h) 45% 95%), hsl(var(--h) 40% 89%)); }
+.home-tile.hued:hover { background: linear-gradient(160deg, hsl(var(--h) 45% 93%), hsl(var(--h) 40% 86%)); }
+.home-tile.hued .ht-head .ic { color: hsl(var(--h) 45% 35%); }
+.home-tile.hued .ht-subs span { background: rgba(255,255,255,.7); color: hsl(var(--h) 30% 28%); }
+.kpi.hued { border: 1px solid hsl(var(--h) 28% 86%); border-radius: 14px; }
+.kpi.hued.kpi-blue { border-top: 3px solid var(--accent); } .kpi.hued.kpi-green { border-top: 3px solid var(--ok); }

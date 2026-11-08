@@ -1096,7 +1096,7 @@ function renderNav(activeId, activeGroup) {
 function renderHome() {
   $("#crumb").textContent = "";
   $("#view").innerHTML = `<div class="home-tiles">${NAV.map((g) => { const badge = g.badge ? g.badge() : 0;
-    return `<a class="home-tile" href="#/${lastSub[g.group] || g.items[0].id}">
+    return `<a class="home-tile" style="--h:${[200, 172, 228][NAV.indexOf(g)]}" href="#/${lastSub[g.group] || g.items[0].id}">
       <div class="ht-head">${icon(g.icon, 34)}<span class="ht-title">${esc(g.group)}</span>${badge ? `<span class="nav-count alert">${badge}</span>` : ""}</div>
       <div class="ht-subs">${g.items.map((i) => `<span>${esc(i.label)}</span>`).join("")}</div></a>`; }).join("")}</div>`;
 }
@@ -1797,7 +1797,7 @@ function renderRent() {
   };
 
   const tile = (key, cls, title, value, sub) => `
-    <button type="button" class="rtile ${cls}${st.detail === key ? " open" : ""}" data-detail="${key}" aria-expanded="${st.detail === key}">
+    <button type="button" class="rtile ${cls}${st.detail === key ? " open" : ""}" style="--h:${{ net: 140, received: 210, expected: 38 }[key]}" data-detail="${key}" aria-expanded="${st.detail === key}">
       <span class="rt-text"><span class="rt-label">${title}</span><span class="rt-value">${value}</span><span class="rt-sub">${sub}</span></span>
       <span class="rt-chev">${icon("chevronRight", 22)}</span></button>
     ${st.detail === key ? `<div class="rdetail">${details[key]()}</div>` : ""}`;
@@ -2718,6 +2718,19 @@ async function boot() {
   render();
   rentControlCheck({ auto: true }); // reads Rent Control.xlsx only if it changed since the last time
 }
+
+// soft hue for every tile/card on the page (neighbours differ); tiles with their own --h keep it
+function applyHues(root = $("#view")) {
+  let i = 0;
+  root.querySelectorAll(".home-tile, .rtile, .kpi, .mcard, .pcard, .ttile:not(.vacant)").forEach((el) => {
+    if (el.dataset.hue) { i++; return; }
+    const h = el.style.getPropertyValue("--h") || TILE_HUES[i % TILE_HUES.length];
+    el.style.setProperty("--h", h); el.dataset.hue = "1"; el.classList.add("hued"); i++;
+  });
+}
+let _hueTimer = 0;
+new MutationObserver(() => { cancelAnimationFrame(_hueTimer); _hueTimer = requestAnimationFrame(() => applyHues()); })
+  .observe($("#view"), { childList: true, subtree: true });
 
 // header buttons (phones navigate with the bottom tab bar + the chip row of sub-pages)
 $("#backBtn").innerHTML = icon("arrowLeft", 22);
