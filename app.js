@@ -1033,7 +1033,6 @@ const NAV = [
   { group: "Overview", icon: "dashboard", items: [
     { id: "overview/rent", label: "Rental Income", icon: "banknote", render: renderRent },
     { id: "overview/tenants", label: "Tenants & Units", icon: "users", render: renderTenantsUnits },
-    { id: "overview/meters", label: "Meter Data", icon: "gauge", render: renderMeterData },
   ] },
   { group: "Rent Control", icon: "wallet", badge: () => computeReminders().filter((r) => r.level !== "info").length, items: [
     { id: "rent/by-tenant", label: "By Tenant", icon: "user", render: () => renderRentCards("tenant") },
@@ -1065,6 +1064,7 @@ const isPhone = () => phoneMQ.matches;
 /** route → page; "admin/tenants/12" is the Tenant Details page below Data Setup → Tenants */
 function routeItem(route) {
   if (route === "overview/checklists") route = "admin/checklists"; // old bookmark
+  if (route === "overview/meters") route = "admin/meters";
   if (route === "home") return { id: "home", group: "", label: "Property Administration", render: renderHome };
   const m = route.match(/^admin\/tenants\/(\d+)$/);
   if (m) return { id: route, parent: "admin/tenants", group: "Data Setup", label: "Tenant Details", render: () => renderTenantDetail(Number(m[1])) };
@@ -1818,44 +1818,76 @@ function renderRent() {
 
 // ---------------------------------------------------------------- Overview: tenants & units
 function renderTenantsUnits() {
-  const st = (pageState.tu ||= { building: "", status: "" });
-  $("#topActions").innerHTML = `<div class="filters">${buildingFilterHtml(st)}
-    <label>Status</label><select class="input" id="flt_status">
-      <option value="">All</option><option value="rented" ${st.status === "rented" ? "selected" : ""}>let</option><option value="free" ${st.status === "free" ? "selected" : ""}>vacant</option></select></div>`;
+  // one tile per tenant (per building); a click unfolds the details inside the tile. Vacant flats get a grey tile.
+  const st = (pageState.tu ||= { building: "", open: "" });
+  $("#topActions").innerHTML = `<div class="filters">${buildingFilterHtml(st)}</div>`;
   bindBuildingFilter(st, renderTenantsUnits);
-  $("#flt_status").onchange = (e) => { st.status = e.target.value; renderTenantsUnits(); };
 
   if (!db.units.length) { $("#view").innerHTML = emptyHint("No units yet.", "admin/units", "Add units"); return; }
 
-  const isRented = (u) => !!currentLease(u.id) || ownerUnits(u).some((o) => !!currentLease(o.id));
-  const ordered = (bid) => orderedUnits(bid).filter((u) => !isAncillary(u) || currentLease(u.id));
-  const groups = filterBuildings(st).map((b) => ({ b, units: ordered(b.id).filter((u) => !st.status || (st.status === "rented" ? isRented(u) : !isRented(u))) })).filter((g) => g.units.length);
-  const activeTenants = new Set(db.leases.filter((l) => leaseActiveOn(l, today())).map((l) => l.tenant_id));
-  const mainUnits = db.units.filter((u) => RENTABLE.includes(u.unit_type));
-  const rentedCount = mainUnits.filter((u) => currentLease(u.id)).length;
-  const livingArea = sum(mainUnits, (u) => u.area);
+  const now = today();
+  const extrasOf = (u) => db.units.filter((x) => x.building_id === u.building_id && ownerUnits(x).some((o) => o.id === u.id));
+  const sections = filterBuildings(st).map((b) => {
+    const units = orderedUnits(b.id).filter((u) => !isAncillary(u) || currentLease(u.id));
+    const byTenant = new Map();
+    units.forEach((u) => { const l = currentLease(u.id); if (!l) return;
+      if (!byTenant.has(l.tenant_id)) byTenant.set(l.tenant_id, []);
+      byTenant.get(l.tenant_id).push(l); });
+    const vacant = units.filter((u) => RENTABLE.includes(u.unit_type) && !currentLease(u.id));
+    return { b, tenants: [...byTenant.entries()].map(([tid, ls]) => ({ t: byId("tenants", tid), ls })), vacant };
+  }).filter((s) => s.tenants.length || s.vacant.length);
 
-  $("#view").innerHTML = `
-    <div class="kpis">
-      <div class="kpi"><div class="kpi-label">Buildings</div><div class="kpi-value">${db.buildings.length}</div></div>
-      <div class="kpi"><div class="kpi-label">Apartments / commercial</div><div class="kpi-value">${mainUnits.length}</div><div class="kpi-sub">${rentedCount} let · ${mainUnits.length - rentedCount} vacant · ${db.units.length - mainUnits.length} ancillary units</div></div>
-      <div class="kpi"><div class="kpi-label">Active tenants</div><div class="kpi-value">${activeTenants.size}</div><div class="kpi-sub">${db.tenants.length} tenants on record</div></div>
-      <div class="kpi"><div class="kpi-label">Lettable area</div><div class="kpi-value">${fmtNum(livingArea)} m²</div></div>
-    </div>
-    ${groups.length ? `<div class="cgrid">${groups.map((g) => sectionHead(g.b, `${g.units.length} unit(s)`) + g.units.map((u) => {
-      const l = currentLease(u.id), t = l && byId("tenants", l.tenant_id);
-      const extras = db.units.filter((x) => x.building_id === u.building_id && ownerUnits(x).some((o) => o.id === u.id));
-      const nMeters = db.meters.filter((m) => m.unit_id === u.id).length;
-      return ucard({ title: `${esc(u.code)} <span class="muted">${esc(u.unit_type || "")}${u.floor ? " · " + esc(u.floor) : ""}</span>`,
-        sub: t ? `${icon("user", 14)} <a class="link" data-tenant="${t.id}">${esc(tenantName(t))}</a>${t.phone ? ` · <a class="link" href="tel:${esc(t.phone.replace(/[^\d+]/g, ""))}">${esc(t.phone)}</a>` : ""}` : "",
-        metas: [u.area ? metaKV("Area", fmtNum(u.area) + " m²") : "", l ? metaKV("Base rent", fmtMoney(l.cold_rent)) : "", l && u.area ? metaKV("€/m²", fmtNum(l.cold_rent / u.area, 2)) : "",
-          l ? metaKV("Since", fmtDate(l.start_date)) : "", nMeters ? metaKV("Meters", nMeters) : "",
-          extras.length ? metaKV("With", esc(extras.map((x) => x.code).join(", "))) : ""],
-        side: `${l ? `<strong>${fmtMoney(leaseTotal(l))}</strong>` : ""}${statusPill(u)}`,
-        color: unitColor(u.building_id, u.id), attrs: `data-unit="${u.id}"`, cls: isAncillary(u) ? "minor" : "" }); }).join("")).join("")}</div>`
+  const tenantTile = (b, { t, ls }) => {
+    const key = `${b.id}:${t.id}`, open = st.open === key;
+    const monthly = sum(ls, leaseTotal), arrears = round2(sum(ls, leaseArrears));
+    const state = ls.map((l) => monthState(l, thisMonth())).reduce((a, x) => (STATE_RANK[x] > STATE_RANK[a] ? x : a), "none");
+    const units = ls.map((l) => byId("units", l.unit_id));
+    const head = `<div class="tt-head">
+        <div class="tt-name">${esc(tenantName(t))}</div>
+        <div class="tt-units">${icon("home", 14)} ${esc(units.map((u) => u.code).join(", "))}</div>
+        <div class="tt-foot"><strong>${fmtMoney(monthly)}</strong><span class="muted">/ month</span>
+          ${arrears > 0 ? `<span class="pill danger">Arrears ${fmtMoney(arrears)}</span>` : `<span class="pc ${state} pc-pill">${PAY_LABEL[state]}</span>`}</div>
+      </div>`;
+    const detail = !open ? "" : `<div class="tt-detail">
+        <div class="kvs">
+          ${t.phone ? `<div class="kv"><span>Phone</span><span><a class="link" href="tel:${esc(t.phone.replace(/[^\d+]/g, ""))}">${esc(t.phone)}</a></span></div>` : ""}
+          ${t.email ? `<div class="kv"><span>Email</span><span><a class="link" href="mailto:${esc(t.email)}">${esc(t.email)}</a></span></div>` : ""}
+          ${t.co_tenant ? `<div class="kv"><span>Co-tenant</span><span>${esc(t.co_tenant)}</span></div>` : ""}
+        </div>
+        ${ls.map((l) => { const u = byId("units", l.unit_id), ex = extrasOf(u), nM = db.meters.filter((m) => m.unit_id === u.id).length;
+          return `<div class="tt-lease" style="--uc:${unitColor(b.id, u.id)}">
+            <div class="tt-lease-h"><strong>${esc(u.code)}</strong> <span class="muted">${esc(u.unit_type || "")}${u.floor ? " · " + esc(u.floor) : ""}</span></div>
+            <div class="mc-metas">
+              ${[u.area ? metaKV("Area", fmtNum(u.area) + " m²") : "", metaKV("Since", fmtDate(l.start_date)), l.end_date ? metaKV("Until", fmtDate(l.end_date)) : "",
+                metaKV("Base rent", fmtMoney(l.cold_rent)), u.area ? metaKV("€/m²", fmtNum(l.cold_rent / u.area, 2)) : "", metaKV("Total", fmtMoney(leaseTotal(l))),
+                l.deposit ? metaKV("Deposit", fmtMoney(l.deposit)) : "", nM ? metaKV("Meters", nM) : "", ex.length ? metaKV("With", esc(ex.map((x) => x.code).join(", "))) : ""]
+                .filter(Boolean).map((x) => `<span class="mc-meta">${x}</span>`).join("")}
+            </div>
+            <div class="mc-actions"><button type="button" class="btn small" data-lease-open="${l.id}">${icon("file", 16)} Lease</button>
+              <button type="button" class="btn small" data-unit-open="${u.id}">${icon("home", 16)} Unit</button>
+              <button type="button" class="btn small" data-record="${l.id}">${icon("banknote", 16)} Record payment</button></div>
+          </div>`; }).join("")}
+        <div class="mc-actions"><a class="btn small primary" href="#/admin/tenants/${t.id}">${icon("user", 16)} Tenant details</a></div>
+      </div>`;
+    return `<div class="ttile${open ? " open" : ""}${arrears > 0 ? " late" : ""}" data-open="${key}" tabindex="0" role="button" aria-expanded="${open}"
+      style="--uc:${unitColor(b.id, units[0]?.id)}">${head}${detail}</div>`;
+  };
+  const vacantTile = (u) => `<div class="ttile vacant" data-unit="${u.id}" tabindex="0" role="button">
+      <div class="tt-head"><div class="tt-name">Vacant</div><div class="tt-units">${icon("home", 14)} ${esc(u.code)} <span class="muted">${esc(u.unit_type || "")}${u.area ? " · " + fmtNum(u.area) + " m²" : ""}</span></div>
+      <div class="tt-foot">${statusPill(u)}</div></div></div>`;
+
+  const nTenants = new Set(sections.flatMap((s) => s.tenants.map((x) => x.t.id))).size;
+  const nLet = sum(sections, (s) => sum(s.tenants, (x) => x.ls.length)), nVacant = sum(sections, (s) => s.vacant.length);
+  $("#view").innerHTML = `<p class="tu-summary muted">${nTenants} tenant(s) · ${nLet} unit(s) let · ${nVacant} vacant</p>
+    ${sections.length ? `<div class="tgrid">${sections.map((s) => sectionHead(s.b, `${s.tenants.length} tenant(s)`) + s.tenants.map((x) => tenantTile(s.b, x)).join("") + s.vacant.map(vacantTile).join("")).join("")}</div>`
       : '<div class="card"><div class="empty">No units for this selection.</div></div>'}`;
-  $("#view").querySelectorAll("a[data-tenant]").forEach((a) => (a.onclick = (e) => { e.stopPropagation(); location.hash = `#/admin/tenants/${a.dataset.tenant}`; }));
-  bindCards("[data-unit]", (c) => openForm("units", byId("units", c.dataset.unit)));
+
+  bindCards("[data-open]", (c, e) => { if (c.classList.contains("open") && !e.target.closest(".tt-head")) return; st.open = st.open === c.dataset.open ? "" : c.dataset.open; renderTenantsUnits(); });
+  bindCards(".ttile.vacant", (c) => openForm("units", byId("units", c.dataset.unit)));
+  $("#view").querySelectorAll("[data-lease-open]").forEach((b) => (b.onclick = () => openForm("leases", byId("leases", b.dataset.leaseOpen))));
+  $("#view").querySelectorAll("[data-unit-open]").forEach((b) => (b.onclick = () => openForm("units", byId("units", b.dataset.unitOpen))));
+  $("#view").querySelectorAll("[data-record]").forEach((b) => (b.onclick = () => openRecordMonth(byId("leases", b.dataset.record))));
+  const o = $("#view .ttile.open"); if (o && o.getBoundingClientRect().top > window.innerHeight * 0.6) o.scrollIntoView({ block: "nearest", behavior: "smooth" });
 }
 
 // ---------------------------------------------------------------- Overview: meter data
