@@ -1034,7 +1034,6 @@ const NAV = [
     { id: "overview/rent", label: "Rental Income", icon: "banknote", render: renderRent },
     { id: "overview/tenants", label: "Tenants & Units", icon: "users", render: renderTenantsUnits },
     { id: "overview/meters", label: "Meter Data", icon: "gauge", render: renderMeterData },
-    { id: "overview/checklists", label: "Move-in / Move-out", icon: "checklist", render: renderChecklists, badge: () => openMoveTasks() },
   ] },
   { group: "Rent Control", icon: "wallet", badge: () => computeReminders().filter((r) => r.level !== "info").length, items: [
     { id: "rent/by-tenant", label: "By Tenant", icon: "user", render: () => renderRentCards("tenant") },
@@ -1050,6 +1049,7 @@ const NAV = [
     { id: "admin/tenants", label: "Tenants", icon: "user", entity: "tenants" },
     { id: "admin/meters", label: "Meters", icon: "gauge", entity: "meters" },
     { id: "admin/leases", label: "Leases", icon: "file", entity: "leases" },
+    { id: "admin/checklists", label: "Move-in / Move-out", icon: "checklist", render: renderChecklists, badge: () => openMoveTasks() },
     { id: "admin/templates", label: "Document Templates", icon: "layers", entity: "documents", filter: (r) => r.status === "Template", presets: { status: "Template" }, newLabel: "New template" },
     { id: "admin/documents", label: "Documents", icon: "folder", entity: "documents", filter: (r) => r.status !== "Template" },
     { id: "admin/keys", label: "Keys", icon: "key", entity: "keys" },
@@ -1064,6 +1064,7 @@ const isPhone = () => phoneMQ.matches;
 
 /** route → page; "admin/tenants/12" is the Tenant Details page below Data Setup → Tenants */
 function routeItem(route) {
+  if (route === "overview/checklists") route = "admin/checklists"; // old bookmark
   if (route === "home") return { id: "home", group: "", label: "Property Administration", render: renderHome };
   const m = route.match(/^admin\/tenants\/(\d+)$/);
   if (m) return { id: route, parent: "admin/tenants", group: "Data Setup", label: "Tenant Details", render: () => renderTenantDetail(Number(m[1])) };
@@ -1744,62 +1745,74 @@ const monthHead = (ym, i) => `${MONTHS[Number(ym.slice(5)) - 1]}${i === 0 || ym.
 
 // ---------------------------------------------------------------- Overview: rental income
 function renderRent() {
-  const st = (pageState.rent ||= { from: thisMonth(), to: thisMonth(), building: "" });
-  $("#topActions").innerHTML = `<div class="filters">${buildingFilterHtml(st)}</div>`;
-  bindBuildingFilter(st, renderRent);
+  // only the period filter + three tiles (Net rent / Received / Expected); a tile opens its details right below it
+  const st = (pageState.rent ||= { from: thisMonth(), to: thisMonth(), detail: "" });
+  $("#topActions").innerHTML = "";
 
   if (!db.leases.length) { $("#view").innerHTML = emptyHint("No leases yet – rental income is calculated from them.", "admin/leases", "Add leases"); return; }
 
-  const head = monthRangeHtml(st);
   const yms = monthsBetween(st.from, st.to);
   const label = rangeLabel(st.from, st.to);
-  const inBuilding = (l) => { const u = byId("units", l.unit_id); return u && (!st.building || u.building_id === Number(st.building)); };
-  const leases = db.leases.filter(inBuilding).filter((l) => yms.some((ym) => leaseActiveInMonth(l, ym)));
+  const multi = yms.length > 1;
+  const leases = db.leases.filter((l) => byId("units", l.unit_id) && yms.some((ym) => leaseActiveInMonth(l, ym)));
   const activeMonths = (l) => yms.filter((ym) => leaseActiveInMonth(l, ym)).length;
   const exp = (l, f) => (Number(f(l)) || 0) * activeMonths(l);
   const got = (l) => sum(yms, (ym) => paid(l, ym, "rent") + paid(l, ym, "service"));
   const total = sum(leases, (l) => exp(l, leaseTotal)), cold = sum(leases, (l) => exp(l, (x) => x.cold_rent));
-  const received = sum(leases, got);
-  // monthly overview: the selected range (a single month shows its whole year for context)
-  const overviewMonths = yms.length > 1 ? yms : monthsBetween(`${st.from.slice(0, 4)}-01`, `${st.from.slice(0, 4)}-12`);
-  const months = overviewMonths.map((ym) => { const ls = leasesInMonth(ym).filter(inBuilding);
-    return { ym, cold: sum(ls, (l) => l.cold_rent), extra: sum(ls, (l) => leaseTotal(l) - (Number(l.cold_rent) || 0)), total: sum(ls, leaseTotal),
-      received: sum(ls, (l) => paid(l, ym, "rent") + paid(l, ym, "service")) }; });
-  const rentable = db.units.filter((u) => RENTABLE.includes(u.unit_type) && (!st.building || u.building_id === Number(st.building)));
-  const rented = rentable.filter((u) => db.leases.some((l) => l.unit_id === u.id && leaseActiveInMonth(l, st.to)));
-  const maxM = Math.max(1, ...months.map((m) => m.total));
-  const groups = filterBuildings(st).map((b) => ({ b, ls: leases.filter((l) => byId("units", l.unit_id)?.building_id === b.id).sort(cmpLeasesByUnit) })).filter((g) => g.ls.length);
-  const multi = yms.length > 1;
+  const received = sum(leases, got), missing = round2(total - received);
+  const groups = db.buildings.map((b) => ({ b, ls: leases.filter((l) => byId("units", l.unit_id)?.building_id === b.id).sort(cmpLeasesByUnit) })).filter((g) => g.ls.length);
+  const unitTitle = (l) => { const u = byId("units", l.unit_id); return `${esc(u.code)} <span class="muted">${esc(u.unit_type || "")}</span>`; };
+  const tenantSub = (l) => `${icon("user", 14)} ${esc(tenantName(byId("tenants", l.tenant_id)))}`;
+  const color = (l) => unitColor(byId("units", l.unit_id).building_id, l.unit_id);
+  const cardsBy = (sumOf, card) => `<div class="cgrid">${groups.map((g) => sectionHead(g.b, fmtMoney(sum(g.ls, sumOf))) + g.ls.map(card).join("")).join("")}</div>`;
 
-  $("#view").innerHTML = `<div class="sticky-top">${head}
-    <div class="kpis">
-      <div class="kpi"><div class="kpi-label">Expected rental income ${label}</div><div class="kpi-value">${fmtMoney(total)}</div><div class="kpi-sub">incl. prepayments${multi ? ` · Ø ${fmtMoney(total / yms.length)} per month` : ""}</div></div>
-      <div class="kpi kpi-blue"><div class="kpi-label">Received ${label}</div><div class="kpi-value">${fmtMoney(received)}</div><div class="kpi-sub ${received >= total - 0.01 ? "kpi-good" : "kpi-missing"}">${received >= total - 0.01 ? "fully received" : fmtMoney(total - received) + " not yet received"}</div></div>
-      <div class="kpi kpi-green"><div class="kpi-label">Net rent</div><div class="kpi-value">${fmtMoney(cold)}</div><div class="kpi-sub">${fmtMoney(total - cold)} prepayments / other</div></div>
-      <div class="kpi"><div class="kpi-label">Occupancy ${fmtMonth(st.to)}</div><div class="kpi-value">${rented.length} / ${rentable.length}</div><div class="kpi-sub">${rentable.length ? Math.round((rented.length / rentable.length) * 100) + " % let (residential/commercial)" : "no units"}</div></div>
-    </div></div>
-    <h3 class="page-h">Rental income ${label} by unit${multi ? ' <span class="muted">sums over the selected months</span>' : ""}</h3>
-    ${groups.length ? `<div class="cgrid">${groups.map((g) => `${sectionHead(g.b, `${fmtMoney(sum(g.ls, got))} <span class="muted">of ${fmtMoney(sum(g.ls, (l) => exp(l, leaseTotal)))}</span>`)}
-      ${g.ls.map((l) => { const t = exp(l, leaseTotal), r = got(l), u = byId("units", l.unit_id);
-        const parts = [["Base", exp(l, (x) => x.cold_rent)], ["Service", exp(l, (x) => x.service_charge)], ["Heating", exp(l, (x) => x.heating_charge)], ["Other", exp(l, (x) => x.other_charge)]].filter((x) => x[1]);
-        return ucard({ title: `${esc(u.code)} <span class="muted">${esc(u.unit_type || "")}</span>`, sub: `${icon("user", 14)} ${esc(tenantName(byId("tenants", l.tenant_id)))}`,
-          metas: [...parts.map(([k, v]) => metaKV(k, fmtMoney(v))), multi ? metaKV("Months", activeMonths(l)) : ""],
-          side: `<strong>${fmtMoney(t)}</strong>${r >= t - 0.01 ? `<span class="pill ok">received</span>` : r ? `<span class="pill free">${fmtMoney(r)} received</span>` : `<span class="pill grey">nothing yet</span>`}`,
-          color: unitColor(g.b.id, l.unit_id), attrs: `data-lease="${l.id}"`, cls: r < t - 0.01 && yms.some((ym) => isDue(l, ym)) ? "warn" : "" }); }).join("")}`).join("")}</div>`
-      : '<div class="card"><div class="empty">No active leases in the selected period.</div></div>'}
-    <div class="card month-card">
-      <div class="card-head"><h3>Monthly overview ${multi ? label : st.from.slice(0, 4)}</h3><span class="muted">${icon("info", 16)} Tap a month to see who paid how much</span></div>
-      <div class="card-body"><div class="mbars">${months.map((m) => { const late = m.ym <= thisMonth() && m.received < m.total - 0.01;
-        return `<button type="button" class="mbar ${!multi && m.ym === st.from ? "sel" : ""}" data-ym="${m.ym}" title="${esc(`${fmtMonth(m.ym)}: expected ${fmtMoney(m.total)}, received ${fmtMoney(m.received)}`)}">
-          <span class="mbar-amt">${m.received ? fmtAmt(Math.round(m.received)) : "–"}</span>
-          <span class="mbar-col"><span class="mbar-exp${late ? " miss" : ""}" style="height:${(m.total / maxM) * 100}%"></span><span class="mbar-got" style="height:${(Math.min(m.received, m.total) / maxM) * 100}%"></span></span>
-          <span class="mbar-m">${MONTHS[Number(m.ym.slice(5)) - 1]}</span></button>`; }).join("")}</div>
-        <div class="mbar-legend"><span><i class="lg got"></i>received</span><span><i class="lg exp"></i>expected</span><span><i class="lg miss"></i>missing (due)</span>
-          <span class="right"><em>Total</em> <strong>${fmtMoney(sum(months, (m) => m.received))}</strong> of ${fmtMoney(sum(months, (m) => m.total))}</span></div></div>
+  // ---- details behind each tile
+  const details = {
+    net: () => `<p class="rd-intro muted">Base rent without prepayments${multi ? " – sums over the selected months" : ""}. On top: <strong>${fmtMoney(total - cold)}</strong> prepayments / other.</p>
+      ${cardsBy((l) => exp(l, (x) => x.cold_rent), (l) => { const u = byId("units", l.unit_id), n = exp(l, (x) => x.cold_rent);
+        return ucard({ title: unitTitle(l), sub: tenantSub(l), metas: [u.area ? metaKV("€/m²", fmtNum(l.cold_rent / u.area, 2)) : "", u.area ? metaKV("Area", fmtNum(u.area) + " m²") : "", multi ? metaKV("Months", activeMonths(l)) : ""],
+          side: `<strong>${fmtMoney(n)}</strong>${multi ? `<span class="muted">${fmtMoney(l.cold_rent)} / month</span>` : ""}`, color: color(l), attrs: `data-lease="${l.id}"` }); })}`,
+    received: () => {
+      const overview = multi ? yms : monthsBetween(`${st.from.slice(0, 4)}-01`, `${st.from.slice(0, 4)}-12`);
+      const months = overview.map((ym) => { const ls = leasesInMonth(ym);
+        return { ym, total: sum(ls, leaseTotal), received: sum(ls, (l) => paid(l, ym, "rent") + paid(l, ym, "service")) }; });
+      const maxM = Math.max(1, ...months.map((m) => m.total));
+      return `<div class="card month-card"><div class="card-head"><h3>${multi ? label : st.from.slice(0, 4)} by month</h3><span class="muted">${icon("info", 16)} Tap a month to see who paid how much</span></div>
+        <div class="card-body"><div class="mbars">${months.map((m) => { const late = m.ym <= thisMonth() && m.received < m.total - 0.01;
+          return `<button type="button" class="mbar ${yms.includes(m.ym) ? "sel" : ""}" data-ym="${m.ym}" title="${esc(`${fmtMonth(m.ym)}: expected ${fmtMoney(m.total)}, received ${fmtMoney(m.received)}`)}">
+            <span class="mbar-amt">${m.received ? fmtAmt(Math.round(m.received)) : "–"}</span>
+            <span class="mbar-col"><span class="mbar-exp${late ? " miss" : ""}" style="height:${(m.total / maxM) * 100}%"></span><span class="mbar-got" style="height:${(Math.min(m.received, m.total) / maxM) * 100}%"></span></span>
+            <span class="mbar-m">${MONTHS[Number(m.ym.slice(5)) - 1]}</span></button>`; }).join("")}</div>
+          <div class="mbar-legend"><span><i class="lg got"></i>received</span><span><i class="lg exp"></i>expected</span><span><i class="lg miss"></i>missing (due)</span></div></div></div>
+        ${cardsBy(got, (l) => { const t = exp(l, leaseTotal), r = got(l), due = yms.some((ym) => isDue(l, ym));
+          return ucard({ title: unitTitle(l), sub: tenantSub(l), metas: [metaKV("Expected", fmtMoney(t))],
+            side: `<strong>${fmtMoney(r)}</strong>${r >= t - 0.01 ? '<span class="pill ok">complete</span>' : `<span class="pill ${due ? "danger" : "free"}">${fmtMoney(t - r)} ${due ? "missing" : "open"}</span>`}`,
+            color: color(l), attrs: `data-lease="${l.id}"`, cls: r < t - 0.01 && due ? "warn" : "" }); })}`;
+    },
+    expected: () => `<p class="rd-intro muted">Base rent plus prepayments as agreed in the leases${multi ? ` – Ø ${fmtMoney(total / yms.length)} per month` : ""}.</p>
+      ${cardsBy((l) => exp(l, leaseTotal), (l) => { const parts = [["Base", (x) => x.cold_rent], ["Service", (x) => x.service_charge], ["Heating", (x) => x.heating_charge], ["Other", (x) => x.other_charge]]
+          .map(([k, f]) => [k, exp(l, f)]).filter((x) => x[1]);
+        return ucard({ title: unitTitle(l), sub: tenantSub(l), metas: [...parts.map(([k, v]) => metaKV(k, fmtMoney(v))), multi ? metaKV("Months", activeMonths(l)) : ""],
+          side: `<strong>${fmtMoney(exp(l, leaseTotal))}</strong>`, color: color(l), attrs: `data-lease="${l.id}"` }); })}`,
+  };
+
+  const tile = (key, cls, title, value, sub) => `
+    <button type="button" class="rtile ${cls}${st.detail === key ? " open" : ""}" data-detail="${key}" aria-expanded="${st.detail === key}">
+      <span class="rt-text"><span class="rt-label">${title}</span><span class="rt-value">${value}</span><span class="rt-sub">${sub}</span></span>
+      <span class="rt-chev">${icon("chevronRight", 22)}</span></button>
+    ${st.detail === key ? `<div class="rdetail">${details[key]()}</div>` : ""}`;
+
+  $("#view").innerHTML = `<div class="sticky-top">${monthRangeHtml(st)}</div>
+    <div class="rtiles">
+      ${tile("net", "rt-net", `Net rent ${label}`, fmtMoney(cold), `${fmtMoney(total - cold)} prepayments / other on top`)}
+      ${tile("received", "rt-received", `Received ${label}`, fmtMoney(received),
+        missing > 0.009 ? `<span class="rt-miss">${fmtMoney(missing)} not yet received</span>` : "fully received")}
+      ${tile("expected", "rt-expected", `Expected ${label}`, fmtMoney(total), `incl. prepayments${multi ? ` · Ø ${fmtMoney(total / yms.length)} per month` : ""} · ${leases.length} lease(s)`)}
     </div>`;
   bindMonthRange(st, renderRent);
   updateStickyOffset();
-  $("#view").querySelectorAll(".mbar").forEach((b) => (b.onclick = () => openMonthDetail(b.dataset.ym, st.building)));
+  $("#view").querySelectorAll(".rtile").forEach((b) => (b.onclick = () => { st.detail = st.detail === b.dataset.detail ? "" : b.dataset.detail; renderRent(); }));
+  $("#view").querySelectorAll(".mbar").forEach((b) => (b.onclick = () => openMonthDetail(b.dataset.ym, "")));
   bindCards("[data-lease]", (c) => openForm("leases", byId("leases", c.dataset.lease)));
 }
 

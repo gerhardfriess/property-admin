@@ -742,3 +742,33 @@ a.m-brand { text-decoration: none; }
   .home-tile { min-height: 0; padding: 18px 16px; gap: 12px; }
   .ht-title { font-size: 19px; }
 }
+
+/* ---------- Rental Income: three big tiles, details unfold below (2026-11-08) ---------- */
+.rtiles { display: flex; flex-direction: column; gap: 12px; margin-top: 14px; }
+.rtile { display: flex; align-items: center; gap: 14px; width: 100%; text-align: left; cursor: pointer; font-family: inherit;
+  background: var(--panel); border: 1px solid var(--line); border-left: 6px solid var(--petrol); border-radius: 10px;
+  padding: 20px 22px; box-shadow: var(--shadow); transition: box-shadow .12s, transform .12s; }
+.rtile:hover { box-shadow: 0 4px 16px rgba(16,32,48,.12); transform: translateY(-1px); }
+.rtile:focus-visible { outline: 2px solid var(--petrol); outline-offset: 2px; }
+.rt-text { flex: 1; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.rt-label { font-size: 14px; font-weight: 600; color: #44515e; }
+.rt-value { font-size: 32px; font-weight: 700; line-height: 1.15; font-variant-numeric: tabular-nums; }
+.rt-sub { font-size: 13px; color: var(--muted); }
+.rt-miss { color: var(--miss); font-weight: 600; }
+.rt-chev { color: var(--muted); transition: transform .15s; display: inline-flex; }
+.rtile.open .rt-chev { transform: rotate(90deg); }
+.rtile.open { border-bottom-left-radius: 4px; border-bottom-right-radius: 4px; }
+.rt-net { background: #e9f6ef; border-color: #cfe9db; border-left-color: var(--ok); }
+.rt-net .rt-value { color: var(--ok); }
+.rt-received { border-left-color: var(--accent); }
+.rt-received .rt-value { color: var(--accent); }
+.rt-expected { border-left-color: #6b7c8c; }
+.rdetail { margin: -4px 0 6px; padding: 14px 0 4px; }
+.rdetail > .cgrid { margin-top: 0; }
+.rdetail .month-card { margin-bottom: 12px; }
+.rd-intro { margin: 0 2px 10px; font-size: 13px; }
+@media (max-width: 820px) {
+  .rtiles { margin-top: 10px; gap: 10px; }
+  .rtile { padding: 16px 14px; }
+  .rt-value { font-size: 27px; }
+}
