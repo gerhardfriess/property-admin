@@ -140,6 +140,7 @@ const ICON_PATHS = {
   logout: '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/>',
   menu: '<path d="M4 6h16"/><path d="M4 12h16"/><path d="M4 18h16"/>',
   chevronRight: '<path d="m9 18 6-6-6-6"/>',
+  chevronLeft: '<path d="m15 18-6-6 6-6"/>',
   key: '<circle cx="7.5" cy="15.5" r="5.5"/><path d="m21 2-9.6 9.6"/><path d="m15.5 7.5 3 3L22 7l-3-3"/>',
   bin: '<path d="M3 6h18"/><path d="M5 6l1.5 15h11L19 6"/><path d="M9 6V3h6v3"/><path d="M10 11v6M14 11v6"/>',
   checklist: '<path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>',
@@ -1066,8 +1067,8 @@ function routeItem(route) {
   if (route === "overview/checklists") route = "admin/checklists"; // old bookmark
   if (route === "overview/meters") route = "admin/meters";
   if (route === "home") return { id: "home", group: "", label: "Property Administration", render: renderHome };
-  const m = route.match(/^admin\/tenants\/(\d+)$/);
-  if (m) return { id: route, parent: "admin/tenants", group: "Data Setup", label: "Tenant Details", render: () => renderTenantDetail(Number(m[1])) };
+  const m = route.match(/^(admin|overview)\/tenants\/(\d+)$/);
+  if (m) return { id: route, parent: m[1] + "/tenants", group: m[1] === "admin" ? "Data Setup" : "Overview", label: "Tenant Details", render: () => renderTenantDetail(Number(m[2])) };
   if (route === SETTINGS_ITEM.id) return { ...SETTINGS_ITEM };
   return allNavItems().find((i) => i.id === route) || allNavItems()[0];
 }
@@ -1311,7 +1312,7 @@ function drawForm() {
     ${record && ATTACHABLE.includes(key) ? attachmentsBlock(key, record) : ""}
     ${!record && (ent.related || ATTACHABLE.includes(key)) && key !== "settlements" ? '<p class="muted" style="margin-top:18px">Linked records, photos and files can be added here after saving.</p>' : ""}`;
   $("#drawerFoot").innerHTML = `
-    ${drawerStack.length > 1 ? `<button class="btn" id="backBtn">${icon("arrowLeft", 18)} Back</button>` : ""}
+    ${drawerStack.length > 1 ? `<button class="btn" id="drawerBackBtn">${icon("arrowLeft", 18)} Back</button>` : ""}
     ${record ? `<button class="btn danger" id="delBtn">${icon("trash", 18)} Delete</button>` : ""}
     <div class="right"><button class="btn" id="cancelBtn">Cancel</button><button class="btn primary" id="saveBtn">${icon("check", 18)} Save</button></div>`;
 
@@ -1357,7 +1358,7 @@ function drawForm() {
   }
   $("#saveBtn").onclick = save;
   $("#cancelBtn").onclick = closeDrawer;
-  if ($("#backBtn")) $("#backBtn").onclick = drawerBack;
+  if ($("#drawerBackBtn")) $("#drawerBackBtn").onclick = drawerBack;
   if ($("#delBtn")) $("#delBtn").onclick = async () => {
     if (!await askConfirm(`Really delete ${ent.singular.toLowerCase()} “${ent.display(record)}”?`)) return;
     try {
@@ -1821,7 +1822,7 @@ function renderRent() {
 const TILE_HUES = [210, 172, 38, 262, 140, 16, 228, 335, 85, 192];
 function renderTenantsUnits() {
   // one tile per tenant (per building); a click unfolds the details inside the tile. Vacant flats get a grey tile.
-  const st = (pageState.tu ||= { building: "", open: "" });
+  const st = (pageState.tu ||= { building: "" });
   $("#topActions").innerHTML = `<div class="filters">${buildingFilterHtml(st)}</div>`;
   bindBuildingFilter(st, renderTenantsUnits);
 
@@ -1841,39 +1842,16 @@ function renderTenantsUnits() {
 
   let tileNo = 0; // each tile gets the next soft hue, so neighbours always differ
   const tenantTile = (b, { t, ls }) => {
-    const key = `${b.id}:${t.id}`, open = st.open === key;
-    const monthly = sum(ls, leaseTotal), arrears = round2(sum(ls, leaseArrears));
+    const arrears = round2(sum(ls, leaseArrears));
     const state = ls.map((l) => monthState(l, thisMonth())).reduce((a, x) => (STATE_RANK[x] > STATE_RANK[a] ? x : a), "none");
     const units = ls.map((l) => byId("units", l.unit_id));
-    const head = `<div class="tt-head">
+    return `<div class="ttile${arrears > 0 ? " late" : ""}" data-tenant="${t.id}" tabindex="0" role="link" style="--uc:${unitColor(b.id, units[0]?.id)}">
+      <div class="tt-head">
         <div class="tt-name">${esc(tenantName(t))}</div>
         <div class="tt-units">${icon("home", 14)} ${esc(units.map((u) => u.code).join(", "))}</div>
-        <div class="tt-foot"><strong>${fmtMoney(monthly)}</strong><span class="muted">/ month</span>
+        <div class="tt-foot"><strong>${fmtMoney(sum(ls, leaseTotal))}</strong><span class="muted">/ month</span>
           ${arrears > 0 ? `<span class="pill danger">Arrears ${fmtMoney(arrears)}</span>` : `<span class="pc ${state} pc-pill">${PAY_LABEL[state]}</span>`}</div>
-      </div>`;
-    const detail = !open ? "" : `<div class="tt-detail">
-        <div class="kvs">
-          ${t.phone ? `<div class="kv"><span>Phone</span><span><a class="link" href="tel:${esc(t.phone.replace(/[^\d+]/g, ""))}">${esc(t.phone)}</a></span></div>` : ""}
-          ${t.email ? `<div class="kv"><span>Email</span><span><a class="link" href="mailto:${esc(t.email)}">${esc(t.email)}</a></span></div>` : ""}
-          ${t.co_tenant ? `<div class="kv"><span>Co-tenant</span><span>${esc(t.co_tenant)}</span></div>` : ""}
-        </div>
-        ${ls.map((l) => { const u = byId("units", l.unit_id), ex = extrasOf(u), nM = db.meters.filter((m) => m.unit_id === u.id).length;
-          return `<div class="tt-lease" style="--uc:${unitColor(b.id, u.id)}">
-            <div class="tt-lease-h"><strong>${esc(u.code)}</strong> <span class="muted">${esc(u.unit_type || "")}${u.floor ? " · " + esc(u.floor) : ""}</span></div>
-            <div class="mc-metas">
-              ${[u.area ? metaKV("Area", fmtNum(u.area) + " m²") : "", metaKV("Since", fmtDate(l.start_date)), l.end_date ? metaKV("Until", fmtDate(l.end_date)) : "",
-                metaKV("Base rent", fmtMoney(l.cold_rent)), u.area ? metaKV("€/m²", fmtNum(l.cold_rent / u.area, 2)) : "", metaKV("Total", fmtMoney(leaseTotal(l))),
-                l.deposit ? metaKV("Deposit", fmtMoney(l.deposit)) : "", nM ? metaKV("Meters", nM) : "", ex.length ? metaKV("With", esc(ex.map((x) => x.code).join(", "))) : ""]
-                .filter(Boolean).map((x) => `<span class="mc-meta">${x}</span>`).join("")}
-            </div>
-            <div class="mc-actions"><button type="button" class="btn small" data-lease-open="${l.id}">${icon("file", 16)} Lease</button>
-              <button type="button" class="btn small" data-unit-open="${u.id}">${icon("home", 16)} Unit</button>
-              <button type="button" class="btn small" data-record="${l.id}">${icon("banknote", 16)} Record payment</button></div>
-          </div>`; }).join("")}
-        <div class="mc-actions"><a class="btn small primary" href="#/admin/tenants/${t.id}">${icon("user", 16)} Tenant details</a></div>
-      </div>`;
-    return `<div class="ttile${open ? " open" : ""}${arrears > 0 ? " late" : ""}" data-open="${key}" tabindex="0" role="button" aria-expanded="${open}"
-      style="--h:${TILE_HUES[tileNo++ % TILE_HUES.length]}">${head}${detail}</div>`;
+      </div><span class="tt-chev">${icon("chevronRight", 20)}</span></div>`;
   };
   const vacantTile = (u) => `<div class="ttile vacant" data-unit="${u.id}" tabindex="0" role="button">
       <div class="tt-head"><div class="tt-name">Vacant</div><div class="tt-units">${icon("home", 14)} ${esc(u.code)} <span class="muted">${esc(u.unit_type || "")}${u.area ? " · " + fmtNum(u.area) + " m²" : ""}</span></div>
@@ -1882,15 +1860,11 @@ function renderTenantsUnits() {
   const nTenants = new Set(sections.flatMap((s) => s.tenants.map((x) => x.t.id))).size;
   const nLet = sum(sections, (s) => sum(s.tenants, (x) => x.ls.length)), nVacant = sum(sections, (s) => s.vacant.length);
   $("#view").innerHTML = `<p class="tu-summary muted">${nTenants} tenant(s) · ${nLet} unit(s) let · ${nVacant} vacant</p>
-    ${sections.length ? `<div class="tgrid">${sections.map((s) => sectionHead(s.b, `${s.tenants.length} tenant(s)`) + s.tenants.map((x) => tenantTile(s.b, x)).join("") + s.vacant.map(vacantTile).join("")).join("")}</div>`
+    ${sections.length ? `<div class="tgrid tlist">${sections.map((s) => sectionHead(s.b, `${s.tenants.length} tenant(s)`) + s.tenants.map((x) => tenantTile(s.b, x)).join("") + s.vacant.map(vacantTile).join("")).join("")}</div>`
       : '<div class="card"><div class="empty">No units for this selection.</div></div>'}`;
 
-  bindCards("[data-open]", (c, e) => { if (c.classList.contains("open") && !e.target.closest(".tt-head")) return; st.open = st.open === c.dataset.open ? "" : c.dataset.open; renderTenantsUnits(); });
+  bindCards(".ttile[data-tenant]", (c) => (location.hash = `#/overview/tenants/${c.dataset.tenant}`));
   bindCards(".ttile.vacant", (c) => openForm("units", byId("units", c.dataset.unit)));
-  $("#view").querySelectorAll("[data-lease-open]").forEach((b) => (b.onclick = () => openForm("leases", byId("leases", b.dataset.leaseOpen))));
-  $("#view").querySelectorAll("[data-unit-open]").forEach((b) => (b.onclick = () => openForm("units", byId("units", b.dataset.unitOpen))));
-  $("#view").querySelectorAll("[data-record]").forEach((b) => (b.onclick = () => openRecordMonth(byId("leases", b.dataset.record))));
-  const o = $("#view .ttile.open"); if (o && o.getBoundingClientRect().top > window.innerHeight * 0.6) o.scrollIntoView({ block: "nearest", behavior: "smooth" });
 }
 
 // ---------------------------------------------------------------- Overview: meter data
@@ -2167,7 +2141,8 @@ function renderRentCards(mode) {
 function renderTenantDetail(id) {
   const t = byId("tenants", id);
   if (!t) { location.hash = "#/admin/tenants"; return; }
-  const st = (pageState.tenantDetail ||= { tab: "info" });
+  const st = (pageState.tenantDetail ||= {});
+  if (st.id !== id) Object.assign(st, { id, tab: "pay", year: Number(thisMonth().slice(0, 4)) }); // a new tenant starts with the payment calendar
   $("#title").textContent = tenantName(t);
   $("#topActions").innerHTML = `<button class="btn" id="editTenant">${icon("user", 18)} Edit tenant</button>`;
   $("#editTenant").onclick = () => openForm("tenants", t);
@@ -2184,13 +2159,14 @@ function renderTenantDetail(id) {
   const files = attachmentsOf("tenants", t.id);
   const monthly = sum(active, leaseTotal), arrears = round2(sum(leases, leaseArrears));
 
-  const tabs = [["info", "Name & rent"], ["meters", `Meters (${meters.length})`], ["docs", `Documents (${docs.length + files.length})`]];
+  const tabs = [["pay", "Payments"], ["info", "Name & rent"], ["meters", `Meters (${meters.length})`], ["docs", `Documents (${docs.length + files.length})`]];
   const tabBar = `<div class="seg tabs">${tabs.map(([k, label]) => `<button type="button" class="seg-btn ${st.tab === k ? "active" : ""}" data-tab="${k}">${label}</button>`).join("")}</div>`;
   const row = (label, value) => (value ? `<div class="kv"><span>${label}</span><span>${value}</span></div>` : "");
   const address = [t.street, [t.zip, t.city].filter(Boolean).join(" ")].filter(Boolean).join(", ");
 
   let content = "";
-  if (st.tab === "info") {
+  if (st.tab === "pay") content = paymentCalendar(leases, st);
+  else if (st.tab === "info") {
     content = `
       <div class="kpis compact">
         <div class="kpi kpi-green"><div class="kpi-label">Rent per month</div><div class="kpi-value">${fmtMoney(monthly)}</div><div class="kpi-sub">${active.length ? `${active.length} active lease(s)` : "no active lease"}</div></div>
@@ -2237,12 +2213,49 @@ function renderTenantDetail(id) {
 
   $("#view").innerHTML = `<div class="tenant-detail">${tabBar}${content}</div>`;
   $("#view").querySelectorAll("[data-tab]").forEach((b) => (b.onclick = () => { st.tab = b.dataset.tab; renderTenantDetail(id); }));
+  $("#view").querySelectorAll("[data-year]").forEach((b) => (b.onclick = () => { st.year = Number(b.dataset.year); renderTenantDetail(id); }));
   bindPayCards();
   $("#view").querySelectorAll("[data-lease-open]").forEach((b) => (b.onclick = () => openForm("leases", byId("leases", b.dataset.leaseOpen))));
   $("#view").querySelectorAll("[data-meter]").forEach((b) => (b.onclick = () => openForm("meters", byId("meters", b.dataset.meter))));
   $("#view").querySelectorAll("[data-doc]").forEach((b) => (b.onclick = () => openForm("documents", byId("documents", b.dataset.doc))));
   const al = $("#addLease"); if (al) al.onclick = () => openForm("leases", null, { tenant_id: t.id });
   if (st.tab === "docs") { bindAttachments($("#view"), () => render()); bindGenButtons($("#view")); hydrateAttachments($("#view")); }
+}
+
+/** year calendar of one tenant's payments: one block per lease, 12 month cells (tap = record / correct) */
+function paymentCalendar(leases, st) {
+  const ym = thisMonth(), y = st.year, curY = Number(ym.slice(0, 4));
+  const minY = Math.max(Math.min(curY, ...leases.map((l) => Number(l.start_date.slice(0, 4)))), Number(trackingStart().slice(0, 4)));
+  const months = Array.from({ length: 12 }, (_, i) => `${y}-${String(i + 1).padStart(2, "0")}`);
+  const ls = leases.filter((l) => months.some((m) => leaseActiveInMonth(l, m) || paid(l, m, "rent") || paid(l, m, "service")));
+  const arrears = round2(sum(leases, leaseArrears));
+  const blocks = ls.map((l) => {
+    const u = byId("units", l.unit_id), la = leaseArrears(l);
+    const exp = sum(months.filter((m) => m <= ym), (m) => expected(l, m, "rent") + expected(l, m, "service")); // due so far
+    const got = sum(months, (m) => paid(l, m, "rent") + paid(l, m, "service"));
+    return `<div class="pcard cal${la > 0 ? " late" : ""}" data-lease="${l.id}">
+      <div class="pc-top"><div class="pc-who"><div class="pc-title">${esc(unitLabel(u))}</div>
+        <div class="muted">${fmtMoney(leaseTotal(l))} / month · since ${fmtDate(l.start_date)}${l.end_date ? " · until " + fmtDate(l.end_date) : ""}</div></div>
+        <div class="pc-amt"><strong>${fmtMoney(got)}</strong><span class="muted">${y > Number(ym.slice(0, 4)) ? "nothing due yet" : `of ${fmtMoney(exp)} due in ${y}`}</span></div></div>
+      ${la > 0 ? `<div class="pc-status"><span class="pill danger">${icon("alert", 14)} Arrears ${fmtMoney(la)}</span></div>` : ""}
+      <div class="cal-grid">${months.map((m) => { const s = monthState(l, m), g = round2(paid(l, m, "rent") + paid(l, m, "service"));
+        const e = round2(expected(l, m, "rent") + expected(l, m, "service")), mn = MONTHS[Number(m.slice(5)) - 1];
+        if (!leaseActiveInMonth(l, m) && !g) return `<div class="cal-cell out"><span>${mn}</span><b>–</b></div>`;
+        return `<button type="button" class="cal-cell mchip pc ${s}${m === ym ? " now" : ""}" data-ym="${m}" title="${esc(fmtMonth(m) + " – " + PAY_LABEL[s])}">
+          <span>${mn}</span><b>${g ? fmtAmt(g) : s === "overdue" ? "!" : "·"}</b>${e && g && g < e - 0.009 ? `<i>of ${fmtAmt(e)}</i>` : ""}</button>`; }).join("")}</div>
+      <div class="pc-actions"><button type="button" class="btn small primary" data-act="record">${icon("banknote", 16)} Record payment</button>
+        <button type="button" class="btn small" data-act="lease">${icon("file", 16)} Lease</button></div>
+    </div>`;
+  }).join("");
+  return `<div class="cal-head">
+      <button type="button" class="icon-btn" data-year="${y - 1}" ${y <= minY ? "disabled" : ""} aria-label="Previous year">${icon("chevronLeft", 22)}</button>
+      <strong class="cal-year">${y}</strong>
+      <button type="button" class="icon-btn" data-year="${y + 1}" ${y >= curY + 1 ? "disabled" : ""} aria-label="Next year">${icon("chevronRight", 22)}</button>
+      ${arrears > 0 ? `<span class="pill danger cal-arr">Arrears ${fmtMoney(arrears)}</span>` : `<span class="pill ok cal-arr">nothing outstanding</span>`}
+    </div>
+    <div class="pcards cal-list">${blocks || `<div class="card"><div class="empty">No lease in ${y}.</div></div>`}</div>
+    <div class="legend"><span class="pc ok">paid</span><span class="pc partial">partly paid</span><span class="pc overdue">overdue</span><span class="pc pending">due soon</span>
+      <span class="muted">Tap a month to record or correct its payments.</span></div>`;
 }
 
 function openPayment(l, ym, cat) {
@@ -2733,7 +2746,7 @@ new MutationObserver(() => { cancelAnimationFrame(_hueTimer); _hueTimer = reques
   .observe($("#view"), { childList: true, subtree: true });
 
 // header buttons (phones navigate with the bottom tab bar + the chip row of sub-pages)
-$("#backBtn").innerHTML = icon("arrowLeft", 22);
+$("#backBtn").innerHTML = `${icon("arrowLeft", 20)}<span>Back</span>`;
 $("#settingsBtn").innerHTML = icon("settings", 22);
 $("#navBackdrop").onclick = () => document.body.classList.remove("nav-open");
 window.addEventListener("hashchange", () => document.body.classList.remove("nav-open"));
