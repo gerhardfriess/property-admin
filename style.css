@@ -805,3 +805,21 @@ a.m-brand { text-decoration: none; }
   .tt-lease .mc-actions .btn { flex: 1; justify-content: center; }
 }
 a.btn { text-decoration: none; }
+
+/* ---------- Rounded tiles, each tenant tile in its own soft hue (2026-11-08) ---------- */
+.ttile { --h: 210; border-radius: 18px; border: 1px solid hsl(var(--h) 28% 86%); border-top: 1px solid hsl(var(--h) 28% 86%);
+  background: linear-gradient(160deg, hsl(var(--h) 45% 97%), hsl(var(--h) 38% 93%)); box-shadow: 0 1px 3px rgba(16,32,48,.06); }
+.ttile:hover { box-shadow: 0 6px 18px hsl(var(--h) 30% 40% / .16); }
+.ttile.open { border-color: hsl(var(--h) 30% 78%); border-top-color: hsl(var(--h) 30% 78%); }
+.ttile .tt-name { color: hsl(var(--h) 35% 22%); }
+.ttile.late .tt-name { color: var(--danger); }
+.ttile .tt-units .ic { color: hsl(var(--h) 25% 45%); }
+.ttile .tt-detail { border-top-color: hsl(var(--h) 28% 84%); }
+.ttile .tt-lease { background: rgba(255,255,255,.7); border-left-color: hsl(var(--h) 35% 55%); border-radius: 10px; }
+.ttile .pill.ok, .ttile .pc.ok { background: rgba(255,255,255,.75); }
+.ttile.vacant { background: #f4f6f8; border: 1px dashed #c9d2db; }
+.home-tile { border-radius: 18px; }
+.rtile { border-radius: 18px; }
+.rtile.open { border-bottom-left-radius: 18px; border-bottom-right-radius: 18px; }
+.mcard, .pcard { border-radius: 14px; }
+@media (max-width: 820px) { .ttile { border-radius: 16px; } }

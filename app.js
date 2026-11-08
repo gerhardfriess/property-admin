@@ -1817,6 +1817,8 @@ function renderRent() {
 }
 
 // ---------------------------------------------------------------- Overview: tenants & units
+/** soft, muted hues for tiles: blue, teal, sand, lavender, sage, terracotta, slate, rose, olive, cyan */
+const TILE_HUES = [210, 172, 38, 262, 140, 16, 228, 335, 85, 192];
 function renderTenantsUnits() {
   // one tile per tenant (per building); a click unfolds the details inside the tile. Vacant flats get a grey tile.
   const st = (pageState.tu ||= { building: "", open: "" });
@@ -1837,6 +1839,7 @@ function renderTenantsUnits() {
     return { b, tenants: [...byTenant.entries()].map(([tid, ls]) => ({ t: byId("tenants", tid), ls })), vacant };
   }).filter((s) => s.tenants.length || s.vacant.length);
 
+  let tileNo = 0; // each tile gets the next soft hue, so neighbours always differ
   const tenantTile = (b, { t, ls }) => {
     const key = `${b.id}:${t.id}`, open = st.open === key;
     const monthly = sum(ls, leaseTotal), arrears = round2(sum(ls, leaseArrears));
@@ -1870,7 +1873,7 @@ function renderTenantsUnits() {
         <div class="mc-actions"><a class="btn small primary" href="#/admin/tenants/${t.id}">${icon("user", 16)} Tenant details</a></div>
       </div>`;
     return `<div class="ttile${open ? " open" : ""}${arrears > 0 ? " late" : ""}" data-open="${key}" tabindex="0" role="button" aria-expanded="${open}"
-      style="--uc:${unitColor(b.id, units[0]?.id)}">${head}${detail}</div>`;
+      style="--h:${TILE_HUES[tileNo++ % TILE_HUES.length]}">${head}${detail}</div>`;
   };
   const vacantTile = (u) => `<div class="ttile vacant" data-unit="${u.id}" tabindex="0" role="button">
       <div class="tt-head"><div class="tt-name">Vacant</div><div class="tt-units">${icon("home", 14)} ${esc(u.code)} <span class="muted">${esc(u.unit_type || "")}${u.area ? " · " + fmtNum(u.area) + " m²" : ""}</span></div>
