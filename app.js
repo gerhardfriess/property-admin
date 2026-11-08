@@ -15,6 +15,8 @@ const $ = (sel, root = document) => root.querySelector(sel);
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const money = new Intl.NumberFormat("en-IE", { style: "currency", currency: "EUR" });
 const fmtMoney = (v) => (v == null || v === "" ? "–" : money.format(Number(v)));
+const money0 = new Intl.NumberFormat("en-IE", { style: "currency", currency: "EUR", minimumFractionDigits: 0, maximumFractionDigits: 0 });
+const fmtMoney0 = (v) => (v == null || v === "" ? "–" : money0.format(Number(v))); // whole euros
 const fmtAmt = (v) => Number(v).toLocaleString("en-GB", { minimumFractionDigits: Number.isInteger(Number(v)) ? 0 : 2, maximumFractionDigits: 2 });
 const fmtNum = (v, d = 0) => (v == null || v === "" ? "–" : Number(v).toLocaleString("en-GB", { minimumFractionDigits: d, maximumFractionDigits: d || 3 }));
 const fmtDate = (iso) => { if (!iso) return "–"; const [y, m, d] = iso.split("-"); return `${d}/${m}/${y}`; };
@@ -1738,6 +1740,7 @@ const monthHead = (ym, i) => `${MONTHS[Number(ym.slice(5)) - 1]}${i === 0 || ym.
 
 // ---------------------------------------------------------------- Overview: rental income
 function renderRent() {
+  const fmtMoney = fmtMoney0; // Rental Income shows whole euros only
   // only the period filter + tiles (Net rent / Expected net income / Received / Expected); a tile opens its details right below it
   const st = (pageState.rent ||= { from: addMonths(thisMonth(), -11), to: thisMonth(), detail: "" }); // default: last 12 months
   $("#topActions").innerHTML = "";
@@ -2348,6 +2351,7 @@ window.addEventListener("resize", updateStickyOffset);
 
 // ---------------------------------------------------------------- month detail: who paid how much
 function openMonthDetail(ym, buildingFilter) {
+  const fmtMoney = fmtMoney0; // opened from Rental Income → whole euros
   drawerStack.length = 0;
   const leases = db.leases.filter((l) => {
     const u = byId("units", l.unit_id);
