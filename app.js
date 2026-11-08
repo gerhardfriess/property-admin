@@ -3,7 +3,8 @@
 "use strict";
 
 // ---------------------------------------------------------------- data & API
-const db = { buildings: [], units: [], meters: [], meter_readings: [], tenants: [], leases: [], payments: [], settlements: [], reminders: [], attachments: [], settings: {} };
+const db = { buildings: [], units: [], meters: [], meter_readings: [], tenants: [], leases: [], payments: [], settlements: [], reminders: [], attachments: [],
+  unit_rooms: [], documents: [], keys: [], key_handovers: [], waste_bins: [], checklist: [], settings: {} };
 
 let Backend = null; // ServerBackend (PC) or LocalBackend (OneDrive) – chosen in boot()
 async function api(method, path, body) { return Backend.api(method, path, body); }
@@ -63,16 +64,29 @@ const leaseShort = (l) => (l ? `${tenantName(byId("tenants", l.tenant_id))} · $
 const RENTABLE = ["Apartment", "Commercial", "House"];
 const unitRank = (u) => (!u ? 9 : u.unit_type === "Apartment" || u.unit_type === "House" ? 0 : u.unit_type === "Commercial" ? 1 : 2);
 const cmpUnits = (a, b) => (a?.building_id ?? 1e9) - (b?.building_id ?? 1e9) || (unitRank(a) - unitRank(b)) || String(a?.code || "").localeCompare(String(b?.code || ""), undefined, { numeric: true, sensitivity: "base" });
+/** ids of the units a shared unit (e.g. a garden) belongs to */
+const sharedIds = (u) => String(u?.shared_unit_ids || "").split(",").map(Number).filter(Boolean);
+/** main units a unit belongs to: its one main unit, or all units it is shared with */
+const ownerUnits = (u) => (u?.parent_unit_id ? [byId("units", u.parent_unit_id)] : sharedIds(u).map((i) => byId("units", i))).filter(Boolean);
 /** units of a building in display order: flats, commercial, other – ancillary units directly below their main unit */
-function orderedUnits(bid) {
+function orderedUnits(bid, repeatShared = false) {
   const all = db.units.filter((u) => u.building_id === bid);
-  const mains = all.filter((u) => !u.parent_unit_id || !all.some((p) => p.id === u.parent_unit_id)).sort(cmpUnits);
-  return mains.flatMap((p) => [p, ...all.filter((c) => c.parent_unit_id === p.id).sort(cmpUnits)]);
+  const owners = (u) => ownerUnits(u).filter((o) => all.includes(o));
+  const mains = all.filter((u) => !owners(u).length).sort(cmpUnits);
+  // a unit shared by several flats goes below each of them (repeatShared) or only below the last one,
+  // always after that flat's own ancillary units
+  const lastOwner = (u) => owners(u).sort(cmpUnits).pop();
+  const sharedBelow = (c, p) => !c.parent_unit_id && (repeatShared ? owners(c).includes(p) : lastOwner(c) === p);
+  return mains.flatMap((p) => [p, ...all.filter((c) => c.parent_unit_id === p.id).sort(cmpUnits),
+    ...all.filter((c) => owners(c).length && sharedBelow(c, p)).sort(cmpUnits)]);
 }
+/** ancillary unit: belongs to one main unit or is shared by several */
+const isAncillary = (u) => !!(u?.parent_unit_id || u?.shared_unit_ids);
 const cmpLeasesByUnit = (x, y) => cmpUnits(byId("units", x.unit_id), byId("units", y.unit_id)) || y.start_date.localeCompare(x.start_date);
 /** unit a list record belongs to (for sorting the Data Admin lists) */
 const UNIT_OF = {
   units: (r) => r,
+  keys: (r) => byId("units", r.unit_id),
   meters: (r) => byId("units", r.unit_id),
   leases: (r) => byId("units", r.unit_id),
   settlements: (r) => byId("units", byId("leases", r.lease_id)?.unit_id),
@@ -126,6 +140,10 @@ const ICON_PATHS = {
   logout: '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/>',
   menu: '<path d="M4 6h16"/><path d="M4 12h16"/><path d="M4 18h16"/>',
   chevronRight: '<path d="m9 18 6-6-6-6"/>',
+  key: '<circle cx="7.5" cy="15.5" r="5.5"/><path d="m21 2-9.6 9.6"/><path d="m15.5 7.5 3 3L22 7l-3-3"/>',
+  bin: '<path d="M3 6h18"/><path d="M5 6l1.5 15h11L19 6"/><path d="M9 6V3h6v3"/><path d="M10 11v6M14 11v6"/>',
+  checklist: '<path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>',
+  folder: '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>',
   smartphone: '<rect x="5" y="2" width="14" height="20" rx="2"/><path d="M12 18h.01"/>',
 };
 const icon = (name, size = 20) => `<svg class="ic" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON_PATHS[name] || ""}</svg>`;
@@ -278,7 +296,7 @@ function attachmentsBlock(entity, record) {
   return `<div class="section-title"><span>${icon("paperclip", 16)} Files & photos (${list.length})</span>
       <span class="att-actions">
         <label class="btn small">${icon("camera", 16)} Photo<input type="file" accept="image/*" capture="environment" data-upload="${entity}:${record.id}" hidden></label>
-        <label class="btn small">${icon("upload", 16)} Upload<input type="file" accept="image/*,.pdf,.heic" multiple data-upload="${entity}:${record.id}" hidden></label>
+        <label class="btn small">${icon("upload", 16)} Upload<input type="file" accept="image/*,.pdf,.heic,.docx,.doc,.xlsx,.odt" multiple data-upload="${entity}:${record.id}" hidden></label>
       </span></div>
     <div class="att-drop" data-drop="${entity}:${record.id}">${list.length ? `<div class="att-grid">${attachmentTiles(list)}</div>` : `<div class="muted">${icon("image", 18)} Drop images or PDFs here, take a photo or upload files.</div>`}</div>`;
 }
@@ -480,6 +498,108 @@ const meterTypeOptions = () => optionsFrom([...new Set([...Object.keys(METER_TYP
 const buildingOptions = () => db.buildings.map((b) => ({ value: b.id, label: buildingLabel(b) }));
 const leaseOptions = () => [...db.leases].sort(cmpLeasesByUnit).map((l) => ({ value: l.id, label: leaseLabel(l) + (l.end_date && l.end_date < today() ? " (ended)" : "") }));
 
+// ---------------------------------------------------------------- documents, keys, waste bins, checklist
+const addDays = (iso, n) => { const d = new Date(iso + "T12:00:00"); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10); };
+const COUNTRIES = ["Germany", "Spain", "Austria", "Switzerland", "Other"];
+/** language of the documents of a building: German buildings get German documents */
+const DOC_LANG = { Germany: "German", Austria: "German", Switzerland: "German", Spain: "Spanish" };
+const docLanguage = (b) => DOC_LANG[b?.country] || "English";
+const DOC_TYPES = {
+  self_disclosure: "Tenant self-disclosure (Mieterselbstauskunft)",
+  credit_check: "Credit check / SCHUFA",
+  income_proof: "Proof of income",
+  landlord_reference: "Previous landlord reference (Mietschuldenfreiheit)",
+  lease: "Lease contract (Mietvertrag)",
+  house_rules: "House rules (Hausordnung)",
+  handover: "Handover protocol (Übergabeprotokoll)",
+  landlord_confirmation: "Landlord confirmation (Wohnungsgeberbestätigung)",
+  deposit_account: "Deposit account form (Mietkautionskonto)",
+  energy_certificate: "Energy certificate (Energieausweis)",
+  termination: "Notice of termination (Kündigung)",
+  deposit_settlement: "Deposit settlement (Kautionsabrechnung)",
+  waste: "Waste collection (Müllabfuhr)",
+  other: "Other",
+};
+const DOC_STATUS = ["Draft", "Sent to tenant", "Signed / returned", "Filed", "Template"];
+const DOC_DONE = ["Signed / returned", "Filed"];
+const docTypeLabel = (t) => DOC_TYPES[t] || t || "";
+const docShort = (t) => docTypeLabel(t).replace(/ \(.*\)$/, "");
+const docStatusPill = (s) => (!s ? "" : `<span class="pill ${DOC_DONE.includes(s) ? "ok" : s === "Draft" || s === "Template" ? "grey" : "free"}">${esc(s)}</span>`);
+const KEY_TYPES = ["Central lock (front door / flat / cellar access)", "Mailbox", "Cellar (private)", "Garage", "Storage room", "Bicycle room", "Other"];
+const BIN_TYPES = ["Residual waste (Restmüll)", "Organic waste (Biotonne)", "Paper (Papiertonne)", "Yellow bin / bag (Gelbe Tonne)", "Glass", "Other"];
+const binIds = (b) => String(b?.unit_ids || "").split(",").map(Number).filter(Boolean);
+const binUsers = (b) => { const ids = binIds(b); return ids.length ? ids.map((i) => byId("units", i)?.code).filter(Boolean).join(", ") : "all units"; };
+const roomArea = (r) => (Number(r.base_area) || 0) * (r.factor ?? 1);
+const unitRooms = (uid) => db.unit_rooms.filter((r) => r.unit_id === uid).sort((a, b) => (a.sort_no ?? 999) - (b.sort_no ?? 999) || a.id - b.id);
+const roomsArea = (uid) => Math.round(unitRooms(uid).reduce((t, r) => t + roomArea(r), 0) * 100) / 100;
+const FACTORS = [{ value: 1, label: "100 % – full height (≥ 2 m)" }, { value: 0.5, label: "50 % – height 1–2 m (sloped ceiling)" },
+  { value: 0.25, label: "25 % – balcony / loggia / terrace" }, { value: 0, label: "0 % – height < 1 m" }];
+const keysOut = (k) => db.key_handovers.filter((h) => h.key_id === k.id).reduce((t, h) => t + (h.quantity || 0) - (h.returned_quantity || 0), 0);
+const unitOptionsOf = (bid, filter = () => true) => orderedUnits(Number(bid)).filter(filter).map((u) => ({ value: u.id, label: unitLabel(u, false) }));
+
+/** move-in / move-out checklist (from "Checkliste - Ein und Auszug"). doc = ticks itself when such a document is signed / filed */
+const CHECKLIST = {
+  in: [
+    { section: "Before signing", items: [
+      { key: "self_disclosure", label: "Tenant self-disclosure filled in and signed", doc: "self_disclosure" },
+      { key: "credit_check", label: "SCHUFA / credit check", doc: "credit_check" },
+      { key: "income_proof", label: "Proof of income (last 2–3 payslips or employment contract; self-employed: tax assessment / BWA)", doc: "income_proof" },
+      { key: "landlord_reference", label: "Previous landlord reference (optional)", doc: "landlord_reference" },
+      { key: "id_check", label: "ID checked (do not keep a copy – GDPR)" },
+    ] },
+    { section: "At signing", items: [
+      { key: "lease", label: "Lease contract signed (two copies)", doc: "lease" },
+      { key: "house_rules", label: "House rules attached to the lease", doc: "house_rules" },
+      { key: "handover", label: "Handover protocol with meter readings", doc: "handover" },
+      { key: "condition_photos", label: "Condition documented (photos, existing defects)" },
+      { key: "keys", label: "Keys handed over and recorded", auto: "keys" },
+      { key: "deposit_agreement", label: "Deposit agreed (amount, lump sum or 3 installments, § 551 BGB)" },
+      { key: "energy_certificate", label: "Energy certificate shown", doc: "energy_certificate" },
+    ] },
+    { section: "After moving in", items: [
+      { key: "landlord_confirmation", label: "Landlord confirmation issued (§ 19 BMG – tenant must register within 14 days)", doc: "landlord_confirmation" },
+      { key: "deposit_account_form", label: "Deposit account form returned by the tenant", doc: "deposit_account" },
+      { key: "deposit_account", label: "Deposit paid into a separate deposit account" },
+    ] },
+  ],
+  out: [
+    { section: "Before the move-out date", items: [
+      { key: "termination", label: "Written notice received, notice period checked", doc: "termination" },
+      { key: "appointment", label: "Handover appointment arranged" },
+      { key: "pre_inspection", label: "Pre-inspection for defects (optional)" },
+    ] },
+    { section: "At the handover", items: [
+      { key: "handover", label: "Handover protocol (condition, meter readings, defects, keys)", doc: "handover" },
+      { key: "condition_photos", label: "Photos of the condition" },
+      { key: "compare_move_in", label: "Compared with the move-in protocol (wear vs. damage)" },
+      { key: "keys_returned", label: "All keys returned and counted", auto: "keys_returned" },
+    ] },
+    { section: "After moving out", items: [
+      { key: "utility_settlement", label: "Utility settlement sent (within 12 months after the billing period)" },
+      { key: "deposit_settlement", label: "Deposit settled and repaid (usually 3–6 months)", doc: "deposit_settlement" },
+      { key: "damages", label: "Damages: quotes obtained, offset against deposit, documented" },
+      { key: "move_out_confirmation", label: "Move-out confirmed to the tenant if needed for deregistration" },
+    ] },
+  ],
+};
+const leaseDocs = (l, type, phase) => db.documents.filter((d) => d.lease_id === l.id && d.doc_type === type && (!phase || !d.phase || d.phase === phase));
+/** state of one checklist item: {done, auto, row} */
+function checkState(l, phase, it) {
+  const row = db.checklist.find((c) => c.lease_id === l.id && c.phase === phase && c.item_key === it.key);
+  let auto = false;
+  if (it.doc) auto = leaseDocs(l, it.doc, phase === "in" ? "Move-in" : "Move-out").some((d) => DOC_DONE.includes(d.status));
+  if (it.auto === "keys") auto = db.key_handovers.some((h) => h.lease_id === l.id && h.quantity > 0);
+  if (it.auto === "keys_returned") { const hs = db.key_handovers.filter((h) => h.lease_id === l.id); auto = hs.length > 0 && hs.every((h) => (h.returned_quantity || 0) >= h.quantity); }
+  return { done: auto || !!row?.done, auto, row };
+}
+function checklistProgress(l, phase) {
+  const items = CHECKLIST[phase].flatMap((s) => s.items);
+  return { done: items.filter((it) => checkState(l, phase, it).done).length, total: items.length };
+}
+const leaseHasMoveOut = (l) => !!l.end_date || db.checklist.some((c) => c.lease_id === l.id && c.phase === "out");
+/** phase that currently matters for a lease: move-out when it ends within 60 days or has ended */
+const currentPhase = (l) => (l.end_date && l.end_date <= addDays(today(), 60) ? "out" : "in");
+
 const ENTITIES = {
   buildings: {
     title: "Buildings", singular: "Building", newLabel: "New building",
@@ -491,7 +611,7 @@ const ENTITIES = {
       { key: "house_no", label: "House no." },
       { key: "zip", label: "Postcode" },
       { key: "city", label: "City", required: true },
-      { key: "country", label: "Country", default: "Germany" },
+      { key: "country", label: "Country", type: "select", required: true, default: "Germany", options: () => optionsFrom(COUNTRIES), hint: "Sets the language of the documents (Germany → German)" },
       { key: "building_type", label: "Building type", list: ["Residential building", "Apartment building", "Mixed-use building", "Commercial", "Holiday home"] },
       { key: "year_built", label: "Year built", type: "number" },
       { key: "plot_area", label: "Plot area (m²)", type: "number" },
@@ -500,6 +620,8 @@ const ENTITIES = {
     columns: [
       { label: "Name", value: (r) => `<strong>${esc(buildingName(r))}</strong>` },
       { label: "Address", value: (r) => esc(`${r.street || ""} ${r.house_no || ""}, ${r.zip || ""} ${r.city || ""}`) },
+      { label: "Country", value: (r) => esc(r.country || "") },
+      { label: "Documents in", value: (r) => esc(docLanguage(r)) },
       { label: "Year built", value: (r) => esc(r.year_built ?? ""), num: true },
       { label: "Units", value: (r) => db.units.filter((u) => u.building_id === r.id).length, num: true },
       { label: "Meters", value: (r) => db.meters.filter((m) => m.building_id === r.id).length, num: true },
@@ -511,6 +633,15 @@ const ENTITIES = {
       relatedBlock("Meters in this building", "meters", db.meters.filter((m) => m.building_id === r.id),
         [["Meter type", (m) => esc(m.meter_type)], ["Number", (m) => esc(m.number)], ["Assigned to", (m) => esc(m.unit_id ? byId("units", m.unit_id)?.code : "Common")]],
         { building_id: r.id }, "+ Meter"),
+      relatedBlock("Building documents (house rules, waste collection, …)", "documents", db.documents.filter((d) => d.building_id === r.id && !d.lease_id && !d.unit_id),
+        [["Type", (d) => esc(docShort(d.doc_type))], ["Title / version", (d) => esc([d.title, d.version].filter(Boolean).join(" · "))], ["Date", (d) => fmtDate(d.doc_date)], ["Status", (d) => docStatusPill(d.status)]],
+        { building_id: r.id, doc_type: "house_rules", status: "Filed" }, "+ Document"),
+      relatedBlock("Waste bins", "waste_bins", db.waste_bins.filter((w) => w.building_id === r.id),
+        [["Bin", (w) => esc(w.bin_type)], ["Size", (w) => (w.size_l ? w.size_l + " l" : "–")], ["Used by", (w) => esc(binUsers(w))], ["Pickup", (w) => esc(w.pickup || "")]],
+        { building_id: r.id, active: 1 }, "+ Waste bin"),
+      relatedBlock("Keys", "keys", db.keys.filter((k) => k.building_id === r.id),
+        [["Key", (k) => esc(k.key_type)], ["No.", (k) => esc(k.key_no || "")], ["Unit", (k) => esc(byId("units", k.unit_id)?.code || "all")], ["Total / out", (k) => `${k.quantity ?? "–"} / ${keysOut(k)}`]],
+        { building_id: r.id }, "+ Key"),
     ],
   },
 
@@ -521,17 +652,21 @@ const ENTITIES = {
       { key: "building_id", label: "Building", type: "select", required: true, options: buildingOptions, full: true },
       { key: "code", label: "Name / no.", required: true, hint: "e.g. Flat 1 Ground Floor, Cellar 3, Parking 5" },
       { key: "unit_type", label: "Type", type: "select", required: true, options: () => optionsFrom(UNIT_TYPES), default: "Apartment" },
+      { key: "doc_label", label: "Name in documents", hint: "Short German name used in forms, e.g. WHG_04_DG" },
       { key: "floor", label: "Floor / location", list: ["Basement", "Ground floor", "Upper floor", "1st floor", "2nd floor", "Attic floor", "Outside"] },
-      { key: "area", label: "Area (m²)", type: "number" },
+      { key: "area", label: "Area (m²)", type: "number", hint: "Calculated automatically once rooms are entered below" },
       { key: "rooms", label: "Rooms", type: "number" },
       { key: "parent_unit_id", label: "Belongs to (main unit)", type: "select", full: true, dependsOn: "building_id", emptyLabel: "– independent –",
         hint: "e.g. a cellar, parking space or garden that belongs to an apartment",
-        options: (f) => db.units.filter((u) => u.building_id === Number(f.building_id) && u.id !== Number(f.id) && !u.parent_unit_id).map((u) => ({ value: u.id, label: unitLabel(u, false) })) },
+        options: (f) => db.units.filter((u) => u.building_id === Number(f.building_id) && u.id !== Number(f.id) && !u.parent_unit_id && !u.shared_unit_ids).map((u) => ({ value: u.id, label: unitLabel(u, false) })) },
+      { key: "shared_unit_ids", label: "Shared by (several main units)", type: "multi", full: true, dependsOn: "building_id",
+        hint: "e.g. a garden used by several apartments – leave \"Belongs to\" empty then",
+        options: (f) => db.units.filter((u) => u.building_id === Number(f.building_id) && u.id !== Number(f.id) && !u.parent_unit_id && !u.shared_unit_ids).sort(cmpUnits).map((u) => ({ value: u.id, label: unitLabel(u, false) })) },
       { key: "notes", label: "Notes", type: "textarea", full: true },
     ],
     columns: [
       { label: "Unit", value: (r) => `<strong>${esc(r.code)}</strong>` },
-      { label: "Belongs to", value: (r) => (r.parent_unit_id ? esc(byId("units", r.parent_unit_id)?.code) : "") },
+      { label: "Belongs to", value: (r) => esc(ownerUnits(r).map((u) => u.code).join(", ")) },
       { label: "Type", value: (r) => esc(r.unit_type) },
       { label: "Floor", value: (r) => esc(r.floor || "") },
       { label: "Area", value: (r) => (r.area ? fmtNum(r.area) + " m²" : "–"), num: true },
@@ -540,9 +675,10 @@ const ENTITIES = {
       { label: "Status", value: (r) => statusPill(r) },
     ],
     related: (r) => [
-      ...(r.parent_unit_id ? [] : [relatedBlock("Ancillary units (cellar, parking, …)", "units", db.units.filter((u) => u.parent_unit_id === r.id),
+      ...(r.parent_unit_id || r.shared_unit_ids ? [] : [relatedBlock("Ancillary units (cellar, parking, …)", "units", db.units.filter((u) => u.parent_unit_id === r.id || sharedIds(u).includes(r.id)),
         [["Unit", (u) => esc(u.code)], ["Type", (u) => esc(u.unit_type)], ["Notes", (u) => esc((u.notes || "").slice(0, 40))]],
         { building_id: r.building_id, parent_unit_id: r.id }, "+ Ancillary unit")]),
+      roomsBlock(r),
       relatedBlock("Assigned meters", "meters", db.meters.filter((m) => m.unit_id === r.id),
         [["Meter type", (m) => esc(m.meter_type)], ["Number", (m) => esc(m.number)], ["Location", (m) => esc(m.location || "")]],
         { building_id: r.building_id, unit_id: r.id }, "+ Meter"),
@@ -646,6 +782,125 @@ const ENTITIES = {
       relatedBlock("Utility settlements", "settlements", leaseSettlements(r),
         [["Period", (s) => s.period_year], ["Amount", (s) => fmtMoney(s.amount)], ["Plan", (s) => (s.installments > 1 ? `${s.installments} × from ${fmtMonth(s.first_due_month)}` : `due ${fmtMonth(s.first_due_month)}`)]],
         { lease_id: r.id, period_year: new Date().getFullYear() - 1, first_due_month: thisMonth(), installments: 1 }, "+ Settlement"),
+      checklistBlock(r, "in"),
+      ...(leaseHasMoveOut(r) ? [checklistBlock(r, "out")] : []),
+      generateBar(r),
+      relatedBlock("Documents", "documents", db.documents.filter((d) => d.lease_id === r.id).sort((a, b) => (b.doc_date || "").localeCompare(a.doc_date || "")),
+        [["Type", (d) => esc(docShort(d.doc_type))], ["Phase", (d) => esc(d.phase || "")], ["Date", (d) => fmtDate(d.doc_date)], ["Status", (d) => docStatusPill(d.status)], ["Files", (d) => attachmentsOf("documents", d.id).length || "–"]],
+        { building_id: byId("units", r.unit_id)?.building_id, unit_id: r.unit_id, lease_id: r.id, tenant_id: r.tenant_id, phase: currentPhase(r) === "out" ? "Move-out" : "Move-in", status: "Draft" }, "+ Document"),
+      relatedBlock("Keys handed over", "key_handovers", db.key_handovers.filter((h) => h.lease_id === r.id),
+        [["Key", (h) => esc(keyLabel(byId("keys", h.key_id)))], ["Handed over", (h) => `${h.quantity} × ${h.handed_on ? fmtDate(h.handed_on) : ""}`], ["Returned", (h) => (h.returned_quantity ? `${h.returned_quantity} × ${fmtDate(h.returned_on)}` : "–")]],
+        { lease_id: r.id, quantity: 1, handed_on: r.start_date }, "+ Key handover"),
+    ],
+  },
+
+  unit_rooms: {
+    title: "Rooms", singular: "Room", newLabel: "New room",
+    display: (r) => `${r.name} – ${byId("units", r.unit_id)?.code || ""}`,
+    fields: [
+      { key: "unit_id", label: "Unit", type: "select", required: true, full: true, options: () => [...db.units].sort(cmpUnits).map((u) => ({ value: u.id, label: unitLabel(u) })) },
+      { key: "name", label: "Room (Raumbezeichnung)", required: true, list: ["Wohnen", "Schlafen", "Essen / Kochen", "Essen / Kochen / Wohnen", "Kind", "Bad", "WC", "Flur", "Abstellraum", "Balkon", "Loggia", "Terrasse"] },
+      { key: "sort_no", label: "Order", type: "number", hint: "Position in the room list" },
+      { key: "base_area", label: "Floor area (m²)", type: "number", hint: "Grundfläche – or the area already measured to the 1.5 m line" },
+      { key: "factor", label: "Counts with", type: "select", required: true, default: 1, options: () => FACTORS },
+      { key: "area_note", label: "Deduction note (shown in the lease)", full: true, list: ["m² bis 1,5m - Linie", "-"], hint: "e.g. “m² bis 1,5m - Linie” for rooms under the roof slope" },
+    ],
+    columns: [],
+  },
+
+  documents: {
+    title: "Documents", singular: "Document", newLabel: "New document",
+    display: (r) => `${docShort(r.doc_type)}${r.lease_id ? " – " + leaseShort(byId("leases", r.lease_id)) : ""}`,
+    fields: [
+      { key: "doc_type", label: "Document type", type: "select", required: true, full: true, options: () => Object.entries(DOC_TYPES).map(([value, label]) => ({ value, label })) },
+      { key: "building_id", label: "Building", type: "select", required: true, options: buildingOptions },
+      { key: "unit_id", label: "Unit", type: "select", dependsOn: "building_id", emptyLabel: "– whole building –", options: (f) => unitOptionsOf(f.building_id) },
+      { key: "lease_id", label: "Lease", type: "select", full: true, emptyLabel: "– none (e.g. house rules, applicant) –", options: leaseOptions },
+      { key: "tenant_id", label: "Tenant / applicant", type: "select", full: true, emptyLabel: "– none –", options: () => db.tenants.map((t) => ({ value: t.id, label: tenantName(t) })), hint: "Taken from the lease if left empty" },
+      { key: "phase", label: "Move-in / move-out", type: "select", emptyLabel: "–", options: () => optionsFrom(["Move-in", "Move-out"]) },
+      { key: "status", label: "Status", type: "select", emptyLabel: "–", default: "Draft", options: () => optionsFrom(DOC_STATUS),
+        hint: "Template = Word file with {{placeholders}} used for “Create from template” (a template with a unit is used only for that unit)" },
+      { key: "doc_date", label: "Date", type: "date" },
+      { key: "version", label: "Version", hint: "e.g. v2026-06-29 (house rules)" },
+      { key: "title", label: "Title", full: true },
+      { key: "notes", label: "Notes", type: "textarea", full: true },
+    ],
+    columns: [
+      { label: "Type", value: (r) => `<strong>${esc(docShort(r.doc_type))}</strong>${r.title ? `<div class="muted">${esc(r.title)}</div>` : ""}` },
+      { label: "Unit", value: (r) => esc(byId("units", r.unit_id)?.code || "–") },
+      { label: "Tenant", value: (r) => esc(r.tenant_id ? tenantName(byId("tenants", r.tenant_id)) : "") },
+      { label: "Phase", value: (r) => esc(r.phase || "") },
+      { label: "Date", value: (r) => fmtDate(r.doc_date) },
+      { label: "Version", value: (r) => esc(r.version || "") },
+      { label: "Files", value: (r) => attachmentsOf("documents", r.id).length || '<span class="pill free">none</span>', num: true },
+      { label: "Status", value: (r) => docStatusPill(r.status) },
+    ],
+  },
+
+  keys: {
+    title: "Keys", singular: "Key", newLabel: "New key",
+    display: (r) => keyLabel(r),
+    fields: [
+      { key: "building_id", label: "Building", type: "select", required: true, options: buildingOptions },
+      { key: "unit_id", label: "Unit", type: "select", dependsOn: "building_id", emptyLabel: "– general (whole building) –", options: (f) => unitOptionsOf(f.building_id) },
+      { key: "key_type", label: "Key", required: true, full: true, list: KEY_TYPES },
+      { key: "key_no", label: "Key / lock number", hint: "e.g. 52374-4" },
+      { key: "quantity", label: "Number of keys in total", type: "number" },
+      { key: "opens", label: "Opens", full: true, hint: "e.g. front door = flat door = cellar access = bicycle room" },
+      { key: "notes", label: "Notes", type: "textarea", full: true },
+    ],
+    columns: [
+      { label: "Key", value: (r) => `<strong>${esc(r.key_type)}</strong>${r.opens ? `<div class="muted">${esc(r.opens)}</div>` : ""}` },
+      { label: "No.", value: (r) => esc(r.key_no || "") },
+      { label: "Unit", value: (r) => esc(byId("units", r.unit_id)?.code || "all") },
+      { label: "Total", value: (r) => r.quantity ?? "–", num: true },
+      { label: "Handed out", value: (r) => keysOut(r), num: true },
+      { label: "With", value: (r) => esc(db.key_handovers.filter((h) => h.key_id === r.id && h.quantity > (h.returned_quantity || 0)).map((h) => leaseShort(byId("leases", h.lease_id))).join(", ")) },
+    ],
+    related: (r) => [relatedBlock("Handovers", "key_handovers", db.key_handovers.filter((h) => h.key_id === r.id),
+      [["Lease", (h) => esc(leaseShort(byId("leases", h.lease_id)))], ["Handed over", (h) => `${h.quantity} × ${fmtDate(h.handed_on)}`], ["Returned", (h) => (h.returned_quantity ? `${h.returned_quantity} × ${fmtDate(h.returned_on)}` : "–")]],
+      { key_id: r.id, quantity: 1 }, "+ Handover")],
+  },
+
+  key_handovers: {
+    title: "Key handovers", singular: "Key handover", newLabel: "New key handover",
+    display: (r) => `${keyLabel(byId("keys", r.key_id))} – ${leaseShort(byId("leases", r.lease_id))}`,
+    fields: [
+      { key: "lease_id", label: "Lease", type: "select", required: true, full: true, options: leaseOptions },
+      { key: "key_id", label: "Key", type: "select", required: true, full: true, dependsOn: "lease_id",
+        options: (f) => { const bid = byId("units", byId("leases", f.lease_id)?.unit_id)?.building_id; return db.keys.filter((k) => !bid || k.building_id === bid).map((k) => ({ value: k.id, label: keyLabel(k) + (k.quantity ? ` (${k.quantity - keysOut(k)} available)` : "") })); } },
+      { key: "quantity", label: "Number handed over", type: "number", required: true, default: 1 },
+      { key: "handed_on", label: "Handed over on", type: "date" },
+      { key: "returned_quantity", label: "Number returned", type: "number" },
+      { key: "returned_on", label: "Returned on", type: "date" },
+      { key: "notes", label: "Notes", type: "textarea", full: true },
+    ],
+    columns: [],
+  },
+
+  waste_bins: {
+    title: "Waste bins", singular: "Waste bin", newLabel: "New waste bin",
+    display: (r) => `${r.bin_type}${r.size_l ? " " + r.size_l + " l" : ""}`,
+    fields: [
+      { key: "building_id", label: "Building", type: "select", required: true, options: buildingOptions },
+      { key: "bin_type", label: "Bin", required: true, list: BIN_TYPES },
+      { key: "size_l", label: "Size (litres)", type: "number", list: ["60", "80", "120", "240", "1100"] },
+      { key: "bin_no", label: "Bin / chip number" },
+      { key: "provider", label: "Provider", hint: "e.g. Landkreis Günzburg" },
+      { key: "pickup", label: "Pickup", hint: "e.g. every 2 weeks, Tuesday" },
+      { key: "unit_ids", label: "Used by", type: "multi", full: true, dependsOn: "building_id", hint: "Tick the units sharing this bin – none ticked = all units of the building",
+        options: (f) => unitOptionsOf(f.building_id, (u) => !isAncillary(u)) },
+      { key: "active", label: "In use", type: "checkbox", default: 1 },
+      { key: "notes", label: "Notes", type: "textarea", full: true },
+    ],
+    columns: [
+      { label: "Bin", value: (r) => `<strong>${esc(r.bin_type)}</strong>` },
+      { label: "Size", value: (r) => (r.size_l ? r.size_l + " l" : "–"), num: true },
+      { label: "No.", value: (r) => esc(r.bin_no || "") },
+      { label: "Used by", value: (r) => esc(binUsers(r)) },
+      { label: "Pickup", value: (r) => esc(r.pickup || "") },
+      { label: "Provider", value: (r) => esc(r.provider || "") },
+      { label: "Status", value: (r) => (r.active ? '<span class="pill ok">in use</span>' : '<span class="pill grey">not in use</span>') },
     ],
   },
 
@@ -716,6 +971,10 @@ function statusPill(unit) {
     const p = byId("units", unit.parent_unit_id);
     return `<span class="pill ${p && currentLease(p.id) ? "ok" : "grey"}">with ${esc(p?.code || "?")}</span>`;
   }
+  if (unit.shared_unit_ids) {
+    const owners = ownerUnits(unit);
+    return `<span class="pill ${owners.some((o) => currentLease(o.id)) ? "ok" : "grey"}" title="${esc(owners.map((o) => o.code).join(", "))}">shared (${owners.length})</span>`;
+  }
   const future = db.leases.find((x) => x.unit_id === unit.id && x.start_date > today());
   if (future) return `<span class="pill grey">from ${fmtDate(future.start_date)}</span>`;
   return '<span class="pill free">vacant</span>';
@@ -769,39 +1028,96 @@ function settlementNotesBlock(s) {
 }
 
 // ---------------------------------------------------------------- navigation
+// Three sections (bottom tab bar on phones, sidebar on PC) → sub-pages (chip row on phones).
 const NAV = [
-  { group: "Overview", items: [
+  { group: "Overview", icon: "dashboard", items: [
     { id: "overview/rent", label: "Rental Income", icon: "banknote", render: renderRent },
     { id: "overview/tenants", label: "Tenants & Units", icon: "users", render: renderTenantsUnits },
     { id: "overview/meters", label: "Meter Data", icon: "gauge", render: renderMeterData },
+    { id: "overview/checklists", label: "Move-in / Move-out", icon: "checklist", render: renderChecklists, badge: () => openMoveTasks() },
   ] },
-  { group: "Rent Control", items: [
-    { id: "rent/payments", label: "Payments", icon: "wallet", render: renderPayments },
+  { group: "Rent Control", icon: "wallet", badge: () => computeReminders().filter((r) => r.level !== "info").length, items: [
+    { id: "rent/by-tenant", label: "By Tenant", icon: "user", render: () => renderRentCards("tenant") },
+    { id: "rent/by-unit", label: "By Unit", icon: "home", render: () => renderRentCards("unit") },
+    { id: "rent/payments", label: "Payment Grid", icon: "calendar", render: renderPayments },
     { id: "rent/settlements", label: "Utility Settlements", icon: "calculator", entity: "settlements", noCount: true },
     { id: "rent/deposits", label: "Deposits", icon: "shield", render: renderDeposits },
     { id: "rent/reminders", label: "Reminders", icon: "bell", render: renderReminders, badge: () => computeReminders().filter((r) => r.level !== "info").length },
   ] },
-  { group: "Data Admin", items: [
+  { group: "Data Setup", icon: "database", items: [
     { id: "admin/buildings", label: "Buildings", icon: "building", entity: "buildings" },
     { id: "admin/units", label: "Units", icon: "home", entity: "units" },
-    { id: "admin/meters", label: "Meters", icon: "gauge", entity: "meters" },
     { id: "admin/tenants", label: "Tenants", icon: "user", entity: "tenants" },
+    { id: "admin/meters", label: "Meters", icon: "gauge", entity: "meters" },
     { id: "admin/leases", label: "Leases", icon: "file", entity: "leases" },
-    { id: "admin/settings", label: "Settings", icon: "settings", render: renderSettings },
+    { id: "admin/templates", label: "Document Templates", icon: "layers", entity: "documents", filter: (r) => r.status === "Template", presets: { status: "Template" }, newLabel: "New template" },
+    { id: "admin/documents", label: "Documents", icon: "folder", entity: "documents", filter: (r) => r.status !== "Template" },
+    { id: "admin/keys", label: "Keys", icon: "key", entity: "keys" },
+    { id: "admin/waste", label: "Waste bins", icon: "bin", entity: "waste_bins" },
   ] },
 ];
+const SETTINGS_ITEM = { id: "admin/settings", label: "Settings", icon: "settings", render: () => renderSettings(), group: "Settings" };
 const allNavItems = () => NAV.flatMap((g) => g.items.map((i) => ({ ...i, group: g.group })));
-const currentRoute = () => location.hash.replace(/^#\/?/, "") || "overview/rent";
+const currentRoute = () => location.hash.replace(/^#\/?/, "") || "home";
+const phoneMQ = window.matchMedia("(max-width: 820px)");
+const isPhone = () => phoneMQ.matches;
 
-function renderNav() {
-  const route = currentRoute();
-  $("#nav").innerHTML = NAV.map((g) => `
-    <div class="nav-group">
-      <div class="nav-group-title">${esc(g.group)}</div>
-      ${g.items.map((i) => { const badge = i.badge ? i.badge() : 0;
-        return `<a class="nav-link ${route === i.id ? "active" : ""}" href="#/${i.id}">
-        <span class="nav-label">${icon(i.icon, 20)}<span>${esc(i.label)}</span></span>${badge ? `<span class="nav-count alert">${badge}</span>` : i.entity && !i.noCount ? `<span class="nav-count">${db[i.entity].length}</span>` : ""}</a>`; }).join("")}
-    </div>`).join("");
+/** route → page; "admin/tenants/12" is the Tenant Details page below Data Setup → Tenants */
+function routeItem(route) {
+  if (route === "home") return { id: "home", group: "", label: "Property Administration", render: renderHome };
+  const m = route.match(/^admin\/tenants\/(\d+)$/);
+  if (m) return { id: route, parent: "admin/tenants", group: "Data Setup", label: "Tenant Details", render: () => renderTenantDetail(Number(m[1])) };
+  if (route === SETTINGS_ITEM.id) return { ...SETTINGS_ITEM };
+  return allNavItems().find((i) => i.id === route) || allNavItems()[0];
+}
+
+// last visited sub-page per section, so the bottom tabs return to where you were
+const lastSub = (() => { try { return JSON.parse(localStorage.getItem("pa_last_sub") || "{}"); } catch { return {}; } })();
+function rememberSub(group, id) {
+  if (!NAV.some((g) => g.group === group)) return;
+  lastSub[group] = id;
+  try { localStorage.setItem("pa_last_sub", JSON.stringify(lastSub)); } catch {}
+}
+
+function renderNav(activeId, activeGroup) {
+  const countOf = (i) => (i.filter ? db[i.entity].filter(i.filter).length : db[i.entity].length);
+  // PC sidebar like the sketch: three section buttons; the active one unfolds its sub-pages below it
+  $("#nav").innerHTML = NAV.map((g) => { const open = g.group === activeGroup, gBadge = g.badge ? g.badge() : 0;
+    return `<div class="nav-group${open ? " open" : ""}">
+      <a class="nav-section${open ? " active" : ""}" href="#/${open ? g.items[0].id : lastSub[g.group] || g.items[0].id}">${icon(g.icon, 20)}<span>${esc(g.group)}</span>${gBadge && !open ? `<span class="nav-count alert">${gBadge}</span>` : ""}</a>
+      ${open ? `<div class="nav-subs">${g.items.map((i) => { const badge = i.badge ? i.badge() : 0;
+        return `<a class="nav-link ${activeId === i.id ? "active" : ""}" href="#/${i.id}">
+        <span class="nav-label">${icon(i.icon, 18)}<span>${esc(i.label)}</span></span>${badge ? `<span class="nav-count alert">${badge}</span>` : i.entity && !i.noCount ? `<span class="nav-count">${countOf(i)}</span>` : ""}</a>`; }).join("")}</div>` : ""}
+    </div>`; }).join("") + `<div class="nav-group nav-settings"><a class="nav-link ${activeId === SETTINGS_ITEM.id ? "active" : ""}" href="#/${SETTINGS_ITEM.id}"><span class="nav-label">${icon("settings", 18)}<span>Settings</span></span></a></div>`;
+}
+
+/** start page: one big tile per section (Overview / Rent Control / Data Setup) */
+function renderHome() {
+  $("#crumb").textContent = "";
+  $("#view").innerHTML = `<div class="home-tiles">${NAV.map((g) => { const badge = g.badge ? g.badge() : 0;
+    return `<a class="home-tile" href="#/${lastSub[g.group] || g.items[0].id}">
+      <div class="ht-head">${icon(g.icon, 34)}<span class="ht-title">${esc(g.group)}</span>${badge ? `<span class="nav-count alert">${badge}</span>` : ""}</div>
+      <div class="ht-subs">${g.items.map((i) => `<span>${esc(i.label)}</span>`).join("")}</div></a>`; }).join("")}</div>`;
+}
+
+/** phone: bottom tab bar with the three sections */
+function renderTabbar(item) {
+  $("#tabbar").innerHTML = NAV.map((g) => { const badge = g.badge ? g.badge() : 0;
+    const target = lastSub[g.group] || g.items[0].id;
+    return `<a class="tab ${item.group === g.group ? "active" : ""}" href="#/${item.group === g.group ? g.items[0].id : target}">
+      <span class="tab-ic">${icon(g.icon, 22)}${badge ? `<span class="tab-badge">${badge}</span>` : ""}</span><span>${esc(g.group)}</span></a>`; }).join("");
+}
+
+/** phone: horizontally scrolling chips with the sub-pages of the current section */
+function renderSubnav(activeId, group) {
+  const g = NAV.find((x) => x.group === group);
+  const el = $("#subnav");
+  if (!g) { el.innerHTML = ""; el.hidden = true; return; }
+  el.hidden = false;
+  el.innerHTML = g.items.map((i) => { const badge = i.badge ? i.badge() : 0;
+    return `<a class="chip ${activeId === i.id ? "active" : ""}" href="#/${i.id}">${esc(i.label)}${badge ? `<span class="chip-badge">${badge}</span>` : ""}</a>`; }).join("");
+  const act = el.querySelector(".chip.active");
+  if (act) el.scrollLeft = Math.max(0, act.offsetLeft - (el.clientWidth - act.offsetWidth) / 2);
 }
 
 /** distinct colour per unit (stable within a building); common meters are grey */
@@ -817,6 +1133,9 @@ const SUBGROUP_BY = { meters: (r) => r.unit_id || null };
 
 /** building a record belongs to (used to section the Data Admin lists) */
 const GROUP_BY = {
+  documents: (r) => r.building_id,
+  keys: (r) => r.building_id,
+  waste_bins: (r) => r.building_id,
   units: (r) => r.building_id,
   meters: (r) => r.building_id,
   leases: (r) => byId("units", r.unit_id)?.building_id,
@@ -830,74 +1149,81 @@ const GROUP_BY = {
 const pageState = {}; // remember filters per page
 function render() {
   const route = currentRoute();
-  const item = allNavItems().find((i) => i.id === route) || allNavItems()[0];
-  renderNav();
+  const item = routeItem(route);
+  const navId = item.parent || item.id;
+  rememberSub(item.group, navId);
+  renderNav(navId, item.group);
+  renderTabbar(item);
+  renderSubnav(navId, item.group);
   $("#crumb").textContent = item.group;
   $("#title").textContent = item.label;
+  $("#backBtn").hidden = !item.parent;
+  $("#backBtn").onclick = () => { location.hash = "#/" + item.parent; };
   $("#topActions").innerHTML = "";
-  if (item.entity) renderEntityList(item.entity);
+  if (item.entity) renderEntityList(item.entity, item);
   else item.render();
+  updateStickyOffset();
 }
+let _lastPhone = isPhone();
+phoneMQ.addEventListener?.("change", () => { if (isPhone() !== _lastPhone) { _lastPhone = isPhone(); if (db.buildings.length || db.units.length) render(); } });
 
 // ---------------------------------------------------------------- Data Admin lists
-function renderEntityList(key) {
+function renderEntityList(key, item = {}) {
   const ent = ENTITIES[key];
-  const st = (pageState[key] ||= { q: "" });
+  const st = (pageState[item.id || key] ||= { q: "" });
+  const newLabel = item.newLabel || ent.newLabel;
+  const openNew = () => openForm(key, null, item.presets || {});
+  // tenants open their own detail page (Name & rent · Meters · Documents); everything else the edit form
+  const openRow = (id) => (key === "tenants" ? (location.hash = `#/admin/tenants/${id}`) : openForm(key, byId(key, id)));
   $("#topActions").innerHTML = `
     <div class="search-wrap">${icon("search", 18)}<input class="input search" id="search" placeholder="Search …" value="${esc(st.q)}"></div>
-    <button class="btn primary" id="newBtn">${icon("plus", 18)} ${esc(ent.newLabel)}</button>`;
-  $("#newBtn").onclick = () => openForm(key, null);
+    <button class="btn primary" id="newBtn" title="${esc(newLabel)}">${icon("plus", 18)} <span class="btn-text">${esc(newLabel)}</span></button>`;
+  $("#newBtn").onclick = openNew;
   const search = $("#search");
   search.oninput = () => { st.q = search.value; drawTable(); };
 
   function drawTable() {
     const q = st.q.trim().toLowerCase();
-    const rows = db[key].filter((r) => !q || ent.columns.map((c) => String(c.value(r)).replace(/<[^>]+>/g, "")).join(" ").toLowerCase().includes(q));
+    const all = item.filter ? db[key].filter(item.filter) : db[key];
+    const rows = all.filter((r) => !q || ent.columns.map((c) => String(c.value(r)).replace(/<[^>]+>/g, "")).join(" ").toLowerCase().includes(q));
     if (UNIT_OF[key]) rows.sort((a, b) => cmpUnits(UNIT_OF[key](a), UNIT_OF[key](b)) || (a.meter_type || "").localeCompare(b.meter_type || "") || (b.period_year || 0) - (a.period_year || 0));
-    const rowHtml = (r) => `<tr class="clickable" data-id="${r.id}">${ent.columns.map((c) => `<td class="${c.num ? "num" : c.center ? "center" : ""}${c.hideMobile ? " hm" : ""}${c.cls ? " " + c.cls : ""}">${c.value(r)}</td>`).join("")}</tr>`;
-    const groupOf = GROUP_BY[key];
+    drawCards(rows, q, all);
+  }
+
+  /** one tappable card per record, foldable sections per building (and per unit for meters) */
+  function drawCards(rows, q, all) {
+    const cols = ent.columns.filter((c) => !c.hideMobile);
+    const card = (r, color) => {
+      const vals = cols.map((c) => ({ c, v: String(c.value(r) ?? "") }));
+      const side = vals.filter((x) => x.c.label === "Status").map((x) => x.v).join("");
+      const [first, ...rest] = vals.filter((x) => x.c.label !== "Status");
+      const meta = rest.filter((x) => x.v.replace(/<[^>]+>/g, "").trim() && x.v !== "–").map((x) => `<span class="mc-meta"><em>${esc(x.c.label)}</em> ${x.v}</span>`).join("");
+      return `<button type="button" class="mcard" data-id="${r.id}"${color ? ` style="--uc:${color}"` : ""}>
+        <div class="mc-main"><div class="mc-title">${first ? first.v : esc(ent.display(r))}</div><div class="mc-metas">${meta}</div></div>${side ? `<div class="mc-side">${side}</div>` : ""}${icon("chevronRight", 18)}</button>`;
+    };
+    const groupOf = GROUP_BY[key], subOf = SUBGROUP_BY[key];
     let body;
     if (groupOf) {
-      const sections = [...db.buildings.map((b) => ({ id: b.id, label: buildingShort(b) })), { id: null, label: key === "tenants" ? "Without lease" : "Without building" }];
-      const subOf = SUBGROUP_BY[key];
-      // Meters: building → unit → meters, each level folds open on click (all open while searching).
-      const foldable = !!subOf, opened = (st.open ||= new Set());
-      const isOpen = (k) => !!q || opened.has(k);
-      const chev = (open) => `<span class="fold-chev${open ? " open" : ""}">${icon("chevronRight", 16)}</span>`;
-      const subSections = (bid, rs) => {
-        if (!subOf) return rs.map(rowHtml).join("");
-        const order = orderedUnits(bid);
-        return [...order.map((u) => u.id), null].map((uid) => {
-          const sub = rs.filter((r) => (subOf(r) ?? null) === uid);
+      const sections = [...db.buildings.map((b) => ({ id: b.id, label: buildingShort(b) })), { id: null, label: key === "tenants" ? "Without lease" : "Without building" }]
+        .map((s) => ({ ...s, rs: rows.filter((r) => (groupOf(r) ?? null) === s.id) })).filter((s) => s.rs.length);
+      const toggled = (st.mopen ||= new Set());
+      body = sections.map((s) => {
+        const open = !!q || sections.length === 1 || (isPhone() === toggled.has(`b:${s.id}`)); // PC: open by default, phone: closed
+        let inner = "";
+        if (open) inner = !subOf ? s.rs.map((r) => card(r)).join("") : [...orderedUnits(s.id).map((u) => u.id), null].map((uid) => {
+          const sub = s.rs.filter((r) => (subOf(r) ?? null) === uid);
           if (!sub.length) return "";
-          const fk = `u:${bid}:${uid}`, open = isOpen(fk);
-          const u = uid ? byId("units", uid) : null;
-          const l = u && currentLease(u.id); const t = l && byId("tenants", l.tenant_id);
-          return `<tr class="subgroup${foldable ? " fold" : ""}" data-fold="${fk}" style="--uc:${unitColor(bid, uid)}"><td colspan="${ent.columns.length}">${foldable ? chev(open) : ""}<span class="dot" style="background:var(--uc)"></span>
-            <strong>${u ? (u.parent_unit_id ? "↳ " : "") + esc(u.code) : "Common meters (building)"}</strong>${u ? ` <span class="muted">${esc(u.unit_type)}</span>` : ""}
-            ${t ? `<span class="muted">· ${icon("user", 14)} ${esc(tenantName(t))}</span>` : ""}<span class="muted right">${sub.length}</span></td></tr>
-            ${open ? sub.map((r) => rowHtml(r).replace('<tr class="clickable"', `<tr class="clickable in-sub" style="--uc:${unitColor(bid, uid)}"`)).join("") : ""}`;
+          const u = uid ? byId("units", uid) : null, c = unitColor(s.id, uid);
+          return `<div class="mc-sub"><span class="dot" style="background:${c}"></span>${u ? esc(u.code) : "Common (building)"}<span class="muted">${sub.length}</span></div>${sub.map((r) => card(r, c)).join("")}`;
         }).join("");
-      };
-      body = sections.map((s) => { const rs = rows.filter((r) => (groupOf(r) ?? null) === s.id);
-        const fk = `b:${s.id}`, open = !foldable || isOpen(fk);
-        return rs.length ? `<tr class="group${foldable ? " fold" : ""}" data-fold="${fk}"><td colspan="${ent.columns.length}">${foldable ? chev(open) : ""}${icon("building", 16)} ${esc(s.label)} <span class="muted">(${rs.length})</span></td></tr>${open ? subSections(s.id, rs) : ""}` : ""; }).join("");
-    } else body = rows.map(rowHtml).join("");
-    $("#view").innerHTML = `
-      <div class="card">
-        <div class="table-wrap">
-          ${rows.length ? `<table class="fit">
-            <thead><tr>${ent.columns.map((c) => `<th class="${c.num ? "num" : c.center ? "center" : ""}${c.hideMobile ? " hm" : ""}${c.cls ? " " + c.cls : ""}">${esc(c.label)}</th>`).join("")}</tr></thead>
-            <tbody>${body}</tbody>
-          </table>` : `<div class="empty">${db[key].length ? "No matches." : `No ${esc(ent.title.toLowerCase())} yet.<br><br><button class="btn primary" id="emptyNew">${icon("plus", 18)} ${esc(ent.newLabel)}</button>`}</div>`}
-        </div>
-      </div>`;
-    $("#view").querySelectorAll("tr.clickable").forEach((tr) => (tr.onclick = () => openForm(key, byId(key, tr.dataset.id))));
-    $("#view").querySelectorAll("tr.fold").forEach((tr) => (tr.onclick = () => {
-      if (q) return; const k = tr.dataset.fold, o = st.open;
-      o.has(k) ? o.delete(k) : o.add(k); drawTable();
-    }));
-    const en = $("#emptyNew"); if (en) en.onclick = () => openForm(key, null);
+        return `<section class="mgroup${open ? " open" : ""}"><button type="button" class="mg-head" data-fold="b:${s.id}">${icon("building", 16)}<span>${esc(s.label)}</span><span class="mg-count">${s.rs.length}</span>${icon("chevronRight", 16)}</button>${inner}</section>`;
+      }).join("");
+    } else body = rows.map((r) => card(r)).join("");
+    $("#view").innerHTML = rows.length ? `<div class="mlist">${body}</div>`
+      : `<div class="card"><div class="empty">${all.length ? "No matches." : `No ${esc((item.label || ent.title).toLowerCase())} yet.<br><br><button class="btn primary" id="emptyNew">${icon("plus", 18)} ${esc(newLabel)}</button>`}</div></div>`;
+    $("#view").querySelectorAll(".mcard").forEach((c) => (c.onclick = () => openRow(c.dataset.id)));
+    $("#view").querySelectorAll(".mg-head").forEach((h) => (h.onclick = () => { if (q) return; const k = h.dataset.fold, o = st.mopen; o.has(k) ? o.delete(k) : o.add(k); drawTable(); }));
+    const en = $("#emptyNew"); if (en) en.onclick = openNew;
   }
   drawTable();
 }
@@ -937,6 +1263,9 @@ function fieldHtml(f, values) {
     const empty = f.required ? '<option value="">– please select –</option>' : `<option value="">${esc(f.emptyLabel || "–")}</option>`;
     return `<div class="${cls}">${label}<select class="input" id="${id}" name="${f.key}">${empty}${opts.map((o) => `<option value="${esc(o.value)}" ${String(o.value) === String(v) ? "selected" : ""}>${esc(o.label)}</option>`).join("")}</select>${hint}</div>`;
   }
+  if (f.type === "multi") {
+    return `<div class="${cls}"><label>${esc(f.label)}</label><div class="multi-checks" id="${id}">${multiChecks(f, values)}</div>${hint}</div>`;
+  }
   if (f.type === "textarea") return `<div class="${cls}">${label}<textarea class="input" rows="3" id="${id}" name="${f.key}">${esc(v)}</textarea>${hint}</div>`;
   const type = f.type === "number" ? "text" : (f.type || "text");
   const mode = f.type === "number" ? ' inputmode="decimal"' : "";
@@ -945,12 +1274,20 @@ function fieldHtml(f, values) {
   return `<div class="${cls}">${label}<input class="input" type="${type}"${mode}${list} id="${id}" name="${f.key}" value="${esc(v)}">${dl}${hint}</div>`;
 }
 
+function multiChecks(f, values) {
+  const sel = new Set(String(values[f.key] ?? "").split(",").filter(Boolean));
+  const opts = f.options(values);
+  if (!opts.length) return '<span class="muted">– no units in this building –</span>';
+  return opts.map((o) => `<label class="check"><input type="checkbox" value="${esc(o.value)}" ${sel.has(String(o.value)) ? "checked" : ""}> ${esc(o.label)}</label>`).join("");
+}
+
 function readForm(ent) {
   const out = {};
   for (const f of ent.fields) {
     const el = document.getElementById("f_" + f.key);
     if (!el) continue;
-    out[f.key] = f.type === "checkbox" ? (el.checked ? 1 : 0) : el.value;
+    out[f.key] = f.type === "checkbox" ? (el.checked ? 1 : 0)
+      : f.type === "multi" ? [...el.querySelectorAll("input:checked")].map((c) => c.value).join(",") : el.value;
   }
   return out;
 }
@@ -984,6 +1321,7 @@ function drawForm() {
     ent.fields.filter((f) => f.dependsOn === changed).forEach((f) => {
       const cur = { ...readForm(ent), id };
       const el = document.getElementById("f_" + f.key);
+      if (f.type === "multi") { el.innerHTML = multiChecks(f, { ...cur, [f.key]: "" }); return; }
       const opts = f.options(cur);
       el.innerHTML = `<option value="">${esc(f.emptyLabel || "–")}</option>` + opts.map((o) => `<option value="${esc(o.value)}">${esc(o.label)}</option>`).join("");
     });
@@ -1000,8 +1338,14 @@ function drawForm() {
       const payload = readForm(ent);
       const pending = key === "meters" ? pendingReading() : null;
       if (pending && pending.error) return showFormError(pending.error);
+      if (key === "documents" && payload.lease_id) {
+        const l = byId("leases", payload.lease_id);
+        if (l && !payload.tenant_id) payload.tenant_id = String(l.tenant_id);
+        if (l && !payload.unit_id && byId("units", l.unit_id)?.building_id === Number(payload.building_id)) payload.unit_id = String(l.unit_id);
+      }
       const saved = record ? await api("PUT", `${key}/${record.id}`, payload) : await api("POST", key, payload);
       if (pending) await storeReading(pending);
+      if (key === "unit_rooms") await syncUnitArea(Number(payload.unit_id), record?.unit_id);
       await loadAll();
       toast(pending ? (pending.photo ? "Meter, reading and photo saved" : "Meter and reading saved") : `${ent.singular} saved`);
       render();
@@ -1017,6 +1361,7 @@ function drawForm() {
     if (!await askConfirm(`Really delete ${ent.singular.toLowerCase()} “${ent.display(record)}”?`)) return;
     try {
       await api("DELETE", `${key}/${record.id}`);
+      if (key === "unit_rooms") await syncUnitArea(record.unit_id);
       await loadAll(); toast(`${ent.singular} deleted`); render(); drawerBack();
     } catch (err) { showFormError(err.message); }
   };
@@ -1029,6 +1374,184 @@ function showFormError(msg) {
   const top = drawerStack[drawerStack.length - 1];
   if (top && ENTITIES[top.key]) ENTITIES[top.key].fields.forEach((f) => { msg = msg.replace(new RegExp(`\\b${f.key}\\b`, "g"), f.label); });
   const el = $("#formError"); el.textContent = msg; el.classList.add("show"); $("#drawerBody").scrollTop = 0;
+}
+
+const keyLabel = (k) => (k ? `${k.key_type}${k.key_no ? " #" + k.key_no : ""}${k.unit_id ? " – " + (byId("units", k.unit_id)?.code || "") : ""}` : "?");
+/** unit area = sum of its rooms (after the factor for sloped ceilings / balconies) */
+async function syncUnitArea(...unitIds) {
+  await loadAll();
+  for (const uid of new Set(unitIds.filter(Boolean).map(Number))) {
+    const u = byId("units", uid); if (!u || !unitRooms(uid).length) continue;
+    const area = roomsArea(uid);
+    if (Number(u.area) !== area) await api("PUT", `units/${uid}`, { area });
+  }
+}
+function roomsBlock(u) {
+  const rooms = unitRooms(u.id);
+  const block = relatedBlock("Rooms & living area (for the lease)", "unit_rooms", rooms,
+    [["Room", (r) => esc(r.name)], ["Deduction", (r) => esc(r.area_note || "")], ["Floor area", (r) => (r.base_area != null ? fmtNum(r.base_area) + " m²" : "–")],
+     ["Factor", (r) => ((r.factor ?? 1) === 1 ? "" : fmtNum(r.factor))], ["Counts", (r) => fmtNum(roomArea(r)) + " m²"]],
+    { unit_id: u.id, factor: 1, sort_no: rooms.length + 1 }, "+ Room");
+  if (!rooms.length) return block;
+  return block.replace(/<\/tbody><\/table><\/div>$/, `<tr class="total"><td colspan="4"><strong>Living area (Wohnfläche)</strong></td><td><strong>${fmtNum(roomsArea(u.id))} m²</strong></td></tr></tbody></table></div>`);
+}
+function checklistBlock(l, phase) {
+  const p = checklistProgress(l, phase);
+  return `<div class="section-title"><span>${icon("checklist", 16)} ${phase === "in" ? "Move-in" : "Move-out"} checklist (${p.done}/${p.total})</span>
+    ${phase === "in" && !leaseHasMoveOut(l) ? `<button class="btn small" data-start-out="${l.id}">${icon("plus", 16)} Start move-out</button>` : ""}</div>
+    <div class="related checklist">${CHECKLIST[phase].map((sec) => `<div class="cl-sec">${esc(sec.section)}</div>
+      ${sec.items.map((it) => { const st = checkState(l, phase, it);
+        return `<label class="cl-item${st.done ? " done" : ""}"><input type="checkbox" data-check="${l.id}:${phase}:${it.key}" ${st.done ? "checked" : ""} ${st.auto ? "disabled" : ""}>
+          <span>${esc(it.label)}${st.auto ? ` <span class="pill ok">${it.doc ? "document filed" : "recorded"}</span>` : it.doc ? ' <span class="muted">· ticks itself once the document is signed / filed</span>' : ""}${st.row?.done_on && !st.auto && st.done ? ` <span class="muted">· ${fmtDate(st.row.done_on)}</span>` : ""}</span></label>`; }).join("")}`).join("")}</div>`;
+}
+async function toggleCheck(target, checked) {
+  const [lid, phase, item_key] = target.split(":");
+  const row = db.checklist.find((c) => c.lease_id === Number(lid) && c.phase === phase && c.item_key === item_key);
+  const data = { lease_id: lid, phase, item_key, done: checked ? 1 : 0, done_on: checked ? today() : "" };
+  if (row) await api("PUT", `checklist/${row.id}`, data); else await api("POST", "checklist", data);
+  await loadAll();
+}
+/** leases with a move-in or move-out going on (started up to 90 days ago / starting or ending within 60 days / ended up to 180 days ago) */
+function movingLeases() {
+  const t = today();
+  return db.leases.filter((l) => (l.start_date >= addDays(t, -90) && l.start_date <= addDays(t, 60)) || (l.end_date && l.end_date >= addDays(t, -180) && l.end_date <= addDays(t, 60)));
+}
+/** open checklist items of current moves (menu badge) */
+function openMoveTasks() {
+  return movingLeases().reduce((n, l) => { const p = checklistProgress(l, currentPhase(l)); return n + p.total - p.done; }, 0);
+}
+
+// ---------------------------------------------------------------- Word templates → documents
+// A template is a document with status "Template" and a .docx file containing {{placeholders}}.
+// A table row containing {{#raum}} is repeated for every room of the unit.
+const GEN_TYPES = { lease: "Mietvertrag", handover: "Übergabeprotokoll", landlord_confirmation: "Wohnungsgeberbestätigung",
+  deposit_account: "Mietkautionskonto", self_disclosure: "Mieterselbstauskunft" };
+const DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+const isDocx = (a) => /\.docx$/i.test(a.filename);
+/** best template for a unit: same unit > same building > building in the same country */
+function findTemplate(type, unit) {
+  const b = byId("buildings", unit?.building_id);
+  const score = (d) => (d.unit_id ? (d.unit_id === unit?.id ? 3 : -1) : d.building_id === b?.id ? 2 : byId("buildings", d.building_id)?.country === b?.country ? 1 : -1);
+  return db.documents.filter((d) => d.status === "Template" && d.doc_type === type && attachmentsOf("documents", d.id).some(isDocx))
+    .map((d) => [score(d), d]).filter(([sc]) => sc >= 0).sort((x, y) => y[0] - x[0] || y[1].id - x[1].id)[0]?.[1] || null;
+}
+const DE = {
+  num: (v, min = 1) => (v == null || v === "" ? "" : Number(v).toLocaleString("de-DE", { minimumFractionDigits: min, maximumFractionDigits: 2 })),
+  money: (v) => (v == null || v === "" ? "" : Number(v).toLocaleString("de-DE", { minimumFractionDigits: Number(v) % 1 ? 2 : 0, maximumFractionDigits: 2 }) + " €"),
+  date: (iso) => (iso ? `${iso.slice(8, 10)}.${iso.slice(5, 7)}.${iso.slice(0, 4)}` : ""),
+};
+const ANREDE_DE = { "Mr.": "Herr", "Ms.": "Frau", "Mr. and Mrs.": "Herr und Frau", Company: "Firma" };
+/** persons of a tenant record: main tenant + co-tenant ("Vorname Nachname" or just the first name) */
+function tenantPersons(t) {
+  if (!t) return [];
+  const out = [];
+  if (t.first_name || t.last_name) out.push({ vorname: t.first_name || "", nachname: t.last_name || "" });
+  else if (t.company) out.push({ vorname: "", nachname: t.company });
+  if (t.co_tenant) {
+    const parts = t.co_tenant.trim().split(/\s+/);
+    const nach = parts.length > 1 ? parts.pop() : t.last_name || "";
+    out.push({ vorname: parts.join(" "), nachname: nach });
+  }
+  return out;
+}
+const personsText = (t) => tenantPersons(t).map((x) => `${x.vorname} ${x.nachname}`.trim()).join(" und ");
+/** all placeholder values for a lease (phase "in" / "out") */
+function docValues(l, phase) {
+  const u = byId("units", l.unit_id), b = byId("buildings", u?.building_id), t = byId("tenants", l.tenant_id);
+  const others = db.leases.filter((x) => x.unit_id === l.unit_id && x.id !== l.id);
+  const prev = others.filter((x) => x.start_date < l.start_date).sort((a, c) => c.start_date.localeCompare(a.start_date))[0];
+  const next = others.filter((x) => x.start_date > l.start_date).sort((a, c) => a.start_date.localeCompare(c.start_date))[0];
+  const pName = (x) => (x ? personsText(byId("tenants", x.tenant_id)) || "-" : "-");
+  const date = phase === "out" ? l.end_date || today() : l.start_date;
+  const persons = tenantPersons(t);
+  const addr = t?.street ? `, ${t.street}, ${[t.zip, t.city].filter(Boolean).join(" ")}` : "";
+  const v = {
+    mieter: (t?.company && !(t.first_name || t.last_name) ? t.company : personsText(t)) + addr,
+    mieter_name: personsText(t), anrede: ANREDE_DE[t?.salutation] || t?.salutation || "", vorname: t?.first_name || "", nachname: t?.last_name || t?.company || "",
+    email: t?.email || "", telefon: t?.phone || "",
+    mietbeginn: DE.date(l.start_date), mietende: DE.date(l.end_date),
+    nettomiete: DE.money(l.cold_rent), nebenkosten: DE.money((l.service_charge || 0) + (l.heating_charge || 0)), heizkosten: DE.money(l.heating_charge),
+    sonstiges: DE.money(l.other_charge), gesamtmiete: DE.money(leaseTotal(l)), kaution: DE.money(l.deposit),
+    objekt_strasse: `${b?.street || ""} ${b?.house_no || ""}`.trim(), objekt_plz_ort: `${b?.zip || ""} ${b?.city || ""}`.trim(),
+    ort: b?.city || "", einheit: u?.code || "", einheit_kurz: u?.doc_label || u?.code || "",
+    wohnflaeche: unitRooms(u?.id).length ? DE.num(roomsArea(u.id)) + " m²" : u?.area ? DE.num(u.area) + " m²" : "",
+    datum: DE.date(today()), ablesedatum: DE.date(date), einzugsdatum: DE.date(date), ein_aus: phase === "out" ? "ausgezogen" : "eingezogen",
+    mieter_alt: phase === "out" ? personsText(t) : pName(prev), mieter_neu: phase === "out" ? pName(next) : personsText(t),
+  };
+  v.objekt_adresse = `${v.objekt_strasse}, ${v.objekt_plz_ort}`;
+  for (let i = 0; i < 3; i++) { v[`p${i + 1}_vorname`] = persons[i]?.vorname || ""; v[`p${i + 1}_nachname`] = persons[i]?.nachname || ""; }
+  // meters of the unit + reading on the handover date
+  const METER_KEYS = { kw: (m) => /cold/i.test(m), ww: (m) => /hot/i.test(m), wm: (m) => /^heat$/i.test(m), strom: (m) => /^electricity$/i.test(m) };
+  for (const [k, test] of Object.entries(METER_KEYS)) {
+    const m = db.meters.find((x) => x.unit_id === u?.id && x.active && test(x.meter_type || ""));
+    const r = m && db.meter_readings.find((x) => x.meter_id === m.id && x.reading_date === date);
+    v[`zaehler_${k}_nr`] = m?.number || ""; v[`zaehler_${k}_stand`] = r ? DE.num(r.value, 0) + (m.measure_unit ? " " + m.measure_unit : "") : "";
+  }
+  // keys: up to 3 rows from the recorded handovers, otherwise the usual set of the template
+  const hs = db.key_handovers.filter((h) => h.lease_id === l.id);
+  const keyRows = hs.length ? hs.slice(0, 3).map((h) => { const k = byId("keys", h.key_id) || {};
+      return [String((phase === "out" ? h.returned_quantity : h.quantity) ?? ""), (k.opens || k.key_type || "") + (k.key_no ? ` (Nr. ${k.key_no})` : "")]; })
+    : [["3", "Haustüre = Wohnungstüre = Kellerzugang = Fahrradabstellraum"], ["2", "Briefkasten"], ["", "Keller (privat)"]];
+  for (let i = 0; i < 3; i++) { v[`s${i + 1}_anzahl`] = keyRows[i]?.[0] || ""; v[`s${i + 1}_text`] = keyRows[i]?.[1] || ""; }
+  const rooms = unitRooms(u?.id).map((r) => ({
+    raum: r.name, raum_abzug: (r.factor ?? 1) !== 1 ? DE.num(r.factor, 2) : r.area_note || "",
+    raum_grundflaeche: (r.factor ?? 1) !== 1 ? DE.num(r.base_area) : "", raum_flaeche: DE.num(roomArea(r)) + " m²",
+  }));
+  return { vals: v, loops: { raum: rooms } };
+}
+const xmlText = (v) => String(v ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\n/g, '</w:t><w:br/><w:t xml:space="preserve">');
+const fillVals = (x, vals) => x.replace(/\{\{([a-z0-9_]+)\}\}/gi, (m, k) => (k in vals ? xmlText(vals[k]) : m));
+function fillXml(x, vals, loops) {
+  x = x.replace(/\{\{(?:(?!\}\}).){0,400}?\}\}/gs, (m) => m.replace(/<[^>]+>/g, "")); // placeholders Word split into several runs
+  for (const [name, items] of Object.entries(loops)) {
+    const mark = `{{#${name}}}`;
+    for (let i = x.indexOf(mark); i >= 0; i = x.indexOf(mark)) {
+      const a = Math.max(x.lastIndexOf("<w:tr>", i), x.lastIndexOf("<w:tr ", i)), e = x.indexOf("</w:tr>", i);
+      if (a < 0 || e < 0) { x = x.replace(mark, ""); continue; }
+      const row = x.slice(a, e + 7).replace(mark, "");
+      x = x.slice(0, a) + items.map((it) => fillVals(row, it)).join("") + x.slice(e + 7);
+    }
+  }
+  return fillVals(x, vals);
+}
+async function fillDocx(bytes, vals, loops) {
+  await rcLoadXlsx(); // SheetJS includes the zip reader/writer (CFB)
+  const CFB = XLSX.CFB, z = CFB.read(bytes, { type: "array" });
+  for (const full of z.FullPaths) {
+    const path = full.replace(/^[^/]*\//, "/");
+    if (!/^\/word\/(document|header\d*|footer\d*)\.xml$/.test(path)) continue;
+    const e = CFB.find(z, path);
+    const xml = fillXml(new TextDecoder().decode(new Uint8Array(e.content)), vals, loops);
+    CFB.utils.cfb_add(z, path, new TextEncoder().encode(xml));
+  }
+  return new Uint8Array(CFB.write(z, { type: "array", fileType: "zip", compression: true }));
+}
+/** fill the template for `type` with the data of lease `l`, store it as a new draft document of the lease */
+async function generateDoc(type, l, phase) {
+  const u = byId("units", l.unit_id), tpl = findTemplate(type, u);
+  if (!tpl) throw new Error(`No template for ${GEN_TYPES[type]} – add one under Data Setup → Document Templates.`);
+  const att = attachmentsOf("documents", tpl.id).filter(isDocx).sort((a, c) => c.id - a.id)[0];
+  const res = await fetch(await Backend.resolveFileUrl(att));
+  if (!res.ok) throw new Error("The template file could not be loaded.");
+  const { vals, loops } = docValues(l, phase);
+  const out = await fillDocx(new Uint8Array(await res.arrayBuffer()), vals, loops);
+  const t = byId("tenants", l.tenant_id);
+  const who = (t?.last_name || t?.company || "Mieter").replace(/[\\/:*?"<>|]/g, "");
+  const phaseDe = type === "handover" || type === "landlord_confirmation" ? (phase === "out" ? " Auszug" : " Einzug") : "";
+  const name = `${GEN_TYPES[type]}${phaseDe} - ${(u.doc_label || u.code).replace(/[\\/:*?"<>|]/g, "")} - ${who} (${today()}).docx`;
+  const doc = await api("POST", "documents", { building_id: u.building_id, unit_id: u.id, lease_id: l.id, tenant_id: l.tenant_id, doc_type: type,
+    phase: phase === "out" ? "Move-out" : "Move-in", title: name.replace(/\.docx$/, ""), doc_date: today(), status: "Draft",
+    notes: `Created from template “${tpl.title}”. Check it, print it and set the status to “Signed / returned” once the signed copy is uploaded.` });
+  await uploadFiles("documents", doc.id, [new File([out], name, { type: DOCX_MIME })]);
+  await loadAll();
+  return byId("documents", doc.id);
+}
+function generateBar(l) {
+  const u = byId("units", l.unit_id), ph = currentPhase(l);
+  const btns = Object.entries(GEN_TYPES).filter(([type]) => findTemplate(type, u)).map(([type, label]) =>
+    `<button class="btn small" data-gen="${type}:${l.id}:${type === "handover" || type === "landlord_confirmation" ? ph : "in"}">${icon("file", 16)} ${esc(label)}${type === "handover" || type === "landlord_confirmation" ? (ph === "out" ? " (Auszug)" : " (Einzug)") : ""}</button>`);
+  return `<div class="section-title"><span>${icon("file", 16)} Create from template (${esc(docLanguage(byId("buildings", u?.building_id)))})</span></div>
+    <div class="gen-bar">${btns.length ? btns.join("") : '<span class="muted">No templates for this unit yet – add a Word file under Data Setup → Document Templates.</span>'}</div>`;
 }
 
 function relatedBlock(title, key, rows, cols, presets, addLabel) {
@@ -1082,8 +1605,26 @@ async function storeReading(p) {
   if (photo) await uploadFiles("meter_readings", reading.id, [photo]);
 }
 
+/** "Create from template" buttons (lease form and Tenant Details) */
+function bindGenButtons(root) {
+  root.querySelectorAll("[data-gen]").forEach((b) => (b.onclick = async () => {
+    const [type, lid, phase] = b.dataset.gen.split(":");
+    b.disabled = true; const label = b.innerHTML; b.textContent = "Creating …";
+    try {
+      const doc = await generateDoc(type, byId("leases", lid), phase);
+      toast(`${GEN_TYPES[type]} created – open the file, check it and print it`); render(); openForm("documents", doc, {}, true);
+    } catch (err) { toast(err.message, true); b.disabled = false; b.innerHTML = label; }
+  }));
+}
 function bindRelated() {
   const body = $("#drawerBody");
+  body.querySelectorAll("[data-check]").forEach((c) => (c.onchange = async () => {
+    try { await toggleCheck(c.dataset.check, c.checked); render(); drawForm(); } catch (err) { toast(err.message, true); }
+  }));
+  bindGenButtons(body);
+  body.querySelectorAll("[data-start-out]").forEach((b) => (b.onclick = async () => {
+    try { await api("POST", "checklist", { lease_id: b.dataset.startOut, phase: "out", item_key: "appointment", done: 0 }); await loadAll(); drawForm(); } catch (err) { toast(err.message, true); }
+  }));
   body.querySelectorAll("[data-add]").forEach((b) => (b.onclick = () => openForm(b.dataset.add, null, JSON.parse(b.dataset.presets), true)));
   body.querySelectorAll("tr[data-open]").forEach((tr) => (tr.onclick = () => openForm(tr.dataset.open, byId(tr.dataset.open, tr.dataset.id), {}, true)));
   const add = $("#rd_add");
@@ -1237,35 +1778,29 @@ function renderRent() {
       <div class="kpi kpi-green"><div class="kpi-label">Net rent</div><div class="kpi-value">${fmtMoney(cold)}</div><div class="kpi-sub">${fmtMoney(total - cold)} prepayments / other</div></div>
       <div class="kpi"><div class="kpi-label">Occupancy ${fmtMonth(st.to)}</div><div class="kpi-value">${rented.length} / ${rentable.length}</div><div class="kpi-sub">${rentable.length ? Math.round((rented.length / rentable.length) * 100) + " % let (residential/commercial)" : "no units"}</div></div>
     </div></div>
-    <div class="card">
-      <div class="card-head"><h3>Rental income ${label} by unit</h3>${multi ? '<span class="muted">sums over the selected months</span>' : ""}</div>
-      <div class="table-wrap">${groups.length ? `<table>
-        <thead><tr><th>Unit</th><th>Tenant</th>${multi ? '<th class="num">Months</th>' : ""}<th class="num">Base rent</th><th class="num">Service charges</th><th class="num">Heating</th><th class="num">Other</th><th class="num">Total</th><th class="num">Received</th></tr></thead>
-        <tbody>${groups.map((g) => `
-          <tr class="group"><td colspan="${multi ? 7 : 6}">${icon("building", 16)} ${esc(buildingShort(g.b))}</td><td class="num">${fmtMoney(sum(g.ls, (l) => exp(l, leaseTotal)))}</td><td class="num">${fmtMoney(sum(g.ls, got))}</td></tr>
-          ${g.ls.map((l) => { const t = exp(l, leaseTotal), r = got(l);
-            const uc = unitColor(g.b.id, l.unit_id);
-            return `<tr class="clickable in-sub" style="--uc:${uc}" data-lease="${l.id}"><td><span class="dot" style="background:${uc}"></span> ${esc(unitLabel(byId("units", l.unit_id), false))}</td><td>${esc(tenantName(byId("tenants", l.tenant_id)))}</td>
-            ${multi ? `<td class="num">${activeMonths(l)}</td>` : ""}
-            <td class="num">${fmtMoney(exp(l, (x) => x.cold_rent))}</td><td class="num">${fmtMoney(exp(l, (x) => x.service_charge))}</td><td class="num">${fmtMoney(exp(l, (x) => x.heating_charge))}</td><td class="num">${fmtMoney(exp(l, (x) => x.other_charge))}</td><td class="num"><strong>${fmtMoney(t)}</strong></td>
-            <td class="num">${r >= t - 0.01 ? `<span class="pill ok">${fmtMoney(r)}</span>` : r ? `<span class="pill free">${fmtMoney(r)}</span>` : '<span class="muted">–</span>'}</td></tr>`; }).join("")}`).join("")}
-        </tbody>
-        <tfoot><tr><td colspan="${multi ? 3 : 2}">Total</td><td class="num">${fmtMoney(cold)}</td><td class="num">${fmtMoney(sum(leases, (l) => exp(l, (x) => x.service_charge)))}</td><td class="num">${fmtMoney(sum(leases, (l) => exp(l, (x) => x.heating_charge)))}</td><td class="num">${fmtMoney(sum(leases, (l) => exp(l, (x) => x.other_charge)))}</td><td class="num">${fmtMoney(total)}</td><td class="num">${fmtMoney(received)}</td></tr></tfoot>
-      </table>` : '<div class="empty">No active leases in the selected period.</div>'}</div>
-    </div>
-    <div class="card">
-      <div class="card-head"><h3>Monthly overview ${multi ? label : st.from.slice(0, 4)}</h3><span class="muted">${icon("info", 16)} Click a month to see who paid how much</span></div>
-      <div class="table-wrap"><table>
-        <thead><tr><th>Month</th><th class="num">Base rent</th><th class="num">Prepayments / other</th><th class="num">Expected</th><th class="num">Received</th><th style="width:34%"></th></tr></thead>
-        <tbody>${months.map((m) => `<tr class="month-row" data-ym="${m.ym}" title="Click: payments of ${fmtMonth(m.ym)}" ${!multi && m.ym === st.from ? 'style="background:var(--accent-soft)"' : ""}><td>${fmtMonth(m.ym)}</td><td class="num">${fmtMoney(m.cold)}</td><td class="num">${fmtMoney(m.extra)}</td><td class="num">${fmtMoney(m.total)}</td><td class="num">${m.received ? fmtMoney(m.received) : '<span class="muted">–</span>'}</td>
-          <td><div class="bar"><div class="${m.ym <= thisMonth() && m.received < m.total - 0.01 ? "miss" : ""}" style="width:${(m.total / maxM) * 100}%"></div><div class="got" style="width:${(Math.min(m.received, m.total) / maxM) * 100}%"></div></div></td></tr>`).join("")}</tbody>
-        <tfoot><tr><td>Total</td><td class="num">${fmtMoney(sum(months, (m) => m.cold))}</td><td class="num">${fmtMoney(sum(months, (m) => m.extra))}</td><td class="num">${fmtMoney(sum(months, (m) => m.total))}</td><td class="num">${fmtMoney(sum(months, (m) => m.received))}</td><td></td></tr></tfoot>
-      </table></div>
+    <h3 class="page-h">Rental income ${label} by unit${multi ? ' <span class="muted">sums over the selected months</span>' : ""}</h3>
+    ${groups.length ? `<div class="cgrid">${groups.map((g) => `${sectionHead(g.b, `${fmtMoney(sum(g.ls, got))} <span class="muted">of ${fmtMoney(sum(g.ls, (l) => exp(l, leaseTotal)))}</span>`)}
+      ${g.ls.map((l) => { const t = exp(l, leaseTotal), r = got(l), u = byId("units", l.unit_id);
+        const parts = [["Base", exp(l, (x) => x.cold_rent)], ["Service", exp(l, (x) => x.service_charge)], ["Heating", exp(l, (x) => x.heating_charge)], ["Other", exp(l, (x) => x.other_charge)]].filter((x) => x[1]);
+        return ucard({ title: `${esc(u.code)} <span class="muted">${esc(u.unit_type || "")}</span>`, sub: `${icon("user", 14)} ${esc(tenantName(byId("tenants", l.tenant_id)))}`,
+          metas: [...parts.map(([k, v]) => metaKV(k, fmtMoney(v))), multi ? metaKV("Months", activeMonths(l)) : ""],
+          side: `<strong>${fmtMoney(t)}</strong>${r >= t - 0.01 ? `<span class="pill ok">received</span>` : r ? `<span class="pill free">${fmtMoney(r)} received</span>` : `<span class="pill grey">nothing yet</span>`}`,
+          color: unitColor(g.b.id, l.unit_id), attrs: `data-lease="${l.id}"`, cls: r < t - 0.01 && yms.some((ym) => isDue(l, ym)) ? "warn" : "" }); }).join("")}`).join("")}</div>`
+      : '<div class="card"><div class="empty">No active leases in the selected period.</div></div>'}
+    <div class="card month-card">
+      <div class="card-head"><h3>Monthly overview ${multi ? label : st.from.slice(0, 4)}</h3><span class="muted">${icon("info", 16)} Tap a month to see who paid how much</span></div>
+      <div class="card-body"><div class="mbars">${months.map((m) => { const late = m.ym <= thisMonth() && m.received < m.total - 0.01;
+        return `<button type="button" class="mbar ${!multi && m.ym === st.from ? "sel" : ""}" data-ym="${m.ym}" title="${esc(`${fmtMonth(m.ym)}: expected ${fmtMoney(m.total)}, received ${fmtMoney(m.received)}`)}">
+          <span class="mbar-amt">${m.received ? fmtAmt(Math.round(m.received)) : "–"}</span>
+          <span class="mbar-col"><span class="mbar-exp${late ? " miss" : ""}" style="height:${(m.total / maxM) * 100}%"></span><span class="mbar-got" style="height:${(Math.min(m.received, m.total) / maxM) * 100}%"></span></span>
+          <span class="mbar-m">${MONTHS[Number(m.ym.slice(5)) - 1]}</span></button>`; }).join("")}</div>
+        <div class="mbar-legend"><span><i class="lg got"></i>received</span><span><i class="lg exp"></i>expected</span><span><i class="lg miss"></i>missing (due)</span>
+          <span class="right"><em>Total</em> <strong>${fmtMoney(sum(months, (m) => m.received))}</strong> of ${fmtMoney(sum(months, (m) => m.total))}</span></div></div>
     </div>`;
   bindMonthRange(st, renderRent);
   updateStickyOffset();
-  $("#view").querySelectorAll("tr.month-row").forEach((tr) => (tr.onclick = () => openMonthDetail(tr.dataset.ym, st.building)));
-  $("#view").querySelectorAll("tr[data-lease]").forEach((tr) => (tr.onclick = () => openForm("leases", byId("leases", tr.dataset.lease))));
+  $("#view").querySelectorAll(".mbar").forEach((b) => (b.onclick = () => openMonthDetail(b.dataset.ym, st.building)));
+  bindCards("[data-lease]", (c) => openForm("leases", byId("leases", c.dataset.lease)));
 }
 
 // ---------------------------------------------------------------- Overview: tenants & units
@@ -1279,8 +1814,8 @@ function renderTenantsUnits() {
 
   if (!db.units.length) { $("#view").innerHTML = emptyHint("No units yet.", "admin/units", "Add units"); return; }
 
-  const isRented = (u) => !!currentLease(u.id) || (u.parent_unit_id && !!currentLease(u.parent_unit_id));
-  const ordered = orderedUnits;
+  const isRented = (u) => !!currentLease(u.id) || ownerUnits(u).some((o) => !!currentLease(o.id));
+  const ordered = (bid) => orderedUnits(bid).filter((u) => !isAncillary(u) || currentLease(u.id));
   const groups = filterBuildings(st).map((b) => ({ b, units: ordered(b.id).filter((u) => !st.status || (st.status === "rented" ? isRented(u) : !isRented(u))) })).filter((g) => g.units.length);
   const activeTenants = new Set(db.leases.filter((l) => leaseActiveOn(l, today())).map((l) => l.tenant_id));
   const mainUnits = db.units.filter((u) => RENTABLE.includes(u.unit_type));
@@ -1294,23 +1829,20 @@ function renderTenantsUnits() {
       <div class="kpi"><div class="kpi-label">Active tenants</div><div class="kpi-value">${activeTenants.size}</div><div class="kpi-sub">${db.tenants.length} tenants on record</div></div>
       <div class="kpi"><div class="kpi-label">Lettable area</div><div class="kpi-value">${fmtNum(livingArea)} m²</div></div>
     </div>
-    <div class="card"><div class="table-wrap">${groups.length ? `<table class="fit">
-      <thead><tr><th>Unit</th><th>Type</th><th class="num">Area</th><th>Tenant</th><th>Contact</th><th>Lease start</th><th class="num">Base rent</th><th class="num">€/m² base</th><th class="num">Total</th><th class="num">Meters</th><th>Status</th></tr></thead>
-      <tbody>${groups.map((g) => `<tr class="group"><td colspan="11">${esc(buildingShort(g.b))}</td></tr>
-        ${g.units.map((u) => { const l = currentLease(u.id); const t = l && byId("tenants", l.tenant_id);
-          return `<tr class="clickable" data-unit="${u.id}"><td${u.parent_unit_id ? ' style="padding-left:30px"' : ""}>${u.parent_unit_id ? "↳ " + esc(u.code) : `<strong>${esc(u.code)}</strong>`}${u.floor ? `<div class="muted">${esc(u.floor)}</div>` : ""}</td><td>${esc(u.unit_type)}</td>
-            <td class="num">${u.area ? fmtNum(u.area) + " m²" : "–"}</td>
-            <td>${t ? `<a class="link" data-tenant="${t.id}">${esc(tenantName(t))}</a>` : '<span class="muted">–</span>'}</td>
-            <td>${t ? esc([t.phone, t.email].filter(Boolean).join(" · ")) : ""}</td>
-            <td>${l ? fmtDate(l.start_date) : ""}</td>
-            <td class="num">${l ? fmtMoney(l.cold_rent) : ""}</td>
-            <td class="num">${l && u.area ? fmtNum(l.cold_rent / u.area, 2) : ""}</td>
-            <td class="num">${l ? fmtMoney(leaseTotal(l)) : ""}</td>
-            <td class="num">${db.meters.filter((m) => m.unit_id === u.id).length}</td>
-            <td>${statusPill(u)}</td></tr>`; }).join("")}`).join("")}
-      </tbody></table>` : '<div class="empty">No units for this selection.</div>'}</div></div>`;
-  $("#view").querySelectorAll("a[data-tenant]").forEach((a) => (a.onclick = (e) => { e.stopPropagation(); openForm("tenants", byId("tenants", a.dataset.tenant)); }));
-  $("#view").querySelectorAll("tr[data-unit]").forEach((tr) => (tr.onclick = () => openForm("units", byId("units", tr.dataset.unit))));
+    ${groups.length ? `<div class="cgrid">${groups.map((g) => sectionHead(g.b, `${g.units.length} unit(s)`) + g.units.map((u) => {
+      const l = currentLease(u.id), t = l && byId("tenants", l.tenant_id);
+      const extras = db.units.filter((x) => x.building_id === u.building_id && ownerUnits(x).some((o) => o.id === u.id));
+      const nMeters = db.meters.filter((m) => m.unit_id === u.id).length;
+      return ucard({ title: `${esc(u.code)} <span class="muted">${esc(u.unit_type || "")}${u.floor ? " · " + esc(u.floor) : ""}</span>`,
+        sub: t ? `${icon("user", 14)} <a class="link" data-tenant="${t.id}">${esc(tenantName(t))}</a>${t.phone ? ` · <a class="link" href="tel:${esc(t.phone.replace(/[^\d+]/g, ""))}">${esc(t.phone)}</a>` : ""}` : "",
+        metas: [u.area ? metaKV("Area", fmtNum(u.area) + " m²") : "", l ? metaKV("Base rent", fmtMoney(l.cold_rent)) : "", l && u.area ? metaKV("€/m²", fmtNum(l.cold_rent / u.area, 2)) : "",
+          l ? metaKV("Since", fmtDate(l.start_date)) : "", nMeters ? metaKV("Meters", nMeters) : "",
+          extras.length ? metaKV("With", esc(extras.map((x) => x.code).join(", "))) : ""],
+        side: `${l ? `<strong>${fmtMoney(leaseTotal(l))}</strong>` : ""}${statusPill(u)}`,
+        color: unitColor(u.building_id, u.id), attrs: `data-unit="${u.id}"`, cls: isAncillary(u) ? "minor" : "" }); }).join("")).join("")}</div>`
+      : '<div class="card"><div class="empty">No units for this selection.</div></div>'}`;
+  $("#view").querySelectorAll("a[data-tenant]").forEach((a) => (a.onclick = (e) => { e.stopPropagation(); location.hash = `#/admin/tenants/${a.dataset.tenant}`; }));
+  bindCards("[data-unit]", (c) => openForm("units", byId("units", c.dataset.unit)));
 }
 
 // ---------------------------------------------------------------- Overview: meter data
@@ -1345,37 +1877,31 @@ function renderMeterData() {
     return { b, units };
   }).filter((s) => s.units.length);
 
-  const row = (m, cat) => { const rs = readingsOf(m); const last = rs[0], prev = rs[1]; const u = esc(m.measure_unit || ""); const photos = last ? attachmentsOf("meter_readings", last.id).length : 0;
-    return `<tr class="clickable mrow ${cat}" data-meter="${m.id}">
-      <td class="stripe"></td>
-      <td>${esc(m.meter_type)}${m.active ? "" : ' <span class="pill grey">inactive</span>'}</td><td>${m.number ? esc(m.number) : '<span class="pill free">missing</span>'}</td><td>${esc(m.location || "")}</td>
-      <td>${last ? fmtDate(last.reading_date) : '<span class="pill free">none</span>'}${meterDocIcon(m) ? " " + meterDocIcon(m) : ""}</td>
-      <td class="num">${last ? fmtNum(last.value) + " " + u : ""}</td>
-      <td class="num">${last && prev ? fmtNum(last.value - prev.value) + " " + u : ""}</td>
-      <td class="num"><button class="btn small">${icon("plus", 16)} Reading</button></td></tr>`; };
+  const mcard = (m, color) => { const rs = readingsOf(m); const last = rs[0], prev = rs[1]; const u = esc(m.measure_unit || "");
+    return ucard({ title: `${meterIcon(m.meter_type)}${esc(m.meter_type)} ${m.number ? `<span class="muted">${esc(m.number)}</span>` : '<span class="pill free">no number</span>'}`,
+      metas: [metaKV("Location", esc(m.location || "")), last && prev ? metaKV("Consumption", `${fmtNum(last.value - prev.value)} ${u}`) : "", meterDocIcon(m)],
+      side: last ? `<strong>${fmtNum(last.value)} ${u}</strong><span class="muted">${fmtDate(last.reading_date)}</span>` : '<span class="pill free">no reading</span>',
+      actions: `<button type="button" class="btn small" data-read="${m.id}">${icon("plus", 16)} Reading</button>${m.active ? "" : ' <span class="pill grey">inactive</span>'}${isStale(m) && last ? ' <span class="pill free">reading due</span>' : ""}`,
+      color, attrs: `data-meter="${m.id}"`, cls: m.active ? "" : "minor" }); };
 
   $("#view").innerHTML = `
     <div class="kpis">
       <div class="kpi"><div class="kpi-label">Meters</div><div class="kpi-value">${db.meters.length}</div><div class="kpi-sub">${db.meters.filter((m) => m.active).length} active</div></div>
       <div class="kpi"><div class="kpi-label">Readings recorded</div><div class="kpi-value">${db.meter_readings.length}</div><div class="kpi-sub">${db.attachments.filter((a) => a.entity === "meter_readings").length} with photo</div></div>
       <div class="kpi"><div class="kpi-label">Reading due</div><div class="kpi-value">${db.meters.filter(isStale).length}</div><div class="kpi-sub">active, no reading in the last 12 months</div></div>
-      <div class="kpi"><div class="kpi-label">Colour code</div><div class="legend-col">${["apt", "com", "anc", "common"].map((c) => `<span><span class="dot ${c}"></span>${CATEGORY_LABEL[c]}</span>`).join("")}</div></div>
     </div>
-    ${sections.length ? sections.map((s) => `<div class="card"><div class="card-head"><h3>${icon("building", 18)} ${esc(buildingShort(s.b))}</h3><span class="muted">${sum(s.units, (x) => x.meters.length)} meters</span></div>
-      <div class="table-wrap"><table class="metertable fit">
-      <thead><tr><th class="stripe"></th><th>Meter type</th><th>Number</th><th>Location</th><th>Last reading</th><th class="num">Value</th><th class="num">Consumption since previous</th><th></th></tr></thead>
-      <tbody>${s.units.map(({ u, meters }) => { const cat = unitCategory(u); const l = u && currentLease(u.id); const t = l && byId("tenants", l.tenant_id);
-        return `<tr class="unit-head ${cat}"><td class="stripe"></td><td colspan="7">
-            <span class="unit-name">${u ? (u.parent_unit_id ? "↳ " : "") + esc(u.code) : "Common meters (building)"}</span>
-            <span class="cat-pill ${cat}">${CATEGORY_LABEL[cat]}</span>
-            ${t ? `<span class="muted">${icon("user", 14)} ${esc(tenantName(t))}</span>` : u && RENTABLE.includes(u.unit_type) ? '<span class="pill free">vacant</span>' : ""}
-            <span class="muted right">${meters.length} meter${meters.length > 1 ? "s" : ""}</span></td></tr>
-          ${meters.sort((a, b) => a.meter_type.localeCompare(b.meter_type)).map((m) => row(m, cat)).join("")}`; }).join("")}
-      </tbody></table></div></div>`).join("") : '<div class="card"><div class="empty">No meters for this selection.</div></div>'}`;
-  $("#view").querySelectorAll("tr[data-meter]").forEach((tr) => (tr.onclick = () => {
-    openForm("meters", byId("meters", tr.dataset.meter));
-    setTimeout(() => { const v = $("#rd_value"); if (v) { v.scrollIntoView({ block: "center" }); v.focus(); } }, 220);
-  }));
+    ${sections.length ? `<div class="cgrid">${sections.map((s) => sectionHead(s.b, `${sum(s.units, (x) => x.meters.length)} meters`) + s.units.map(({ u, meters }) => {
+      const cat = unitCategory(u), l = u && currentLease(u.id), t = l && byId("tenants", l.tenant_id), c = unitColor(s.b.id, u?.id);
+      return `<div class="mc-sub"><span class="dot" style="background:${c}"></span>${u ? (isAncillary(u) ? "↳ " : "") + esc(u.code) : "Common meters (building)"}
+        <span class="cat-pill ${cat}">${CATEGORY_LABEL[cat]}</span>${t ? `<span class="muted">${icon("user", 14)} ${esc(tenantName(t))}</span>` : u && RENTABLE.includes(u.unit_type) ? '<span class="pill free">vacant</span>' : ""}</div>
+        ${meters.sort((a, b) => a.meter_type.localeCompare(b.meter_type)).map((m) => mcard(m, c)).join("")}`; }).join("")).join("")}</div>`
+      : '<div class="card"><div class="empty">No meters for this selection.</div></div>'}`;
+  const openMeter = (id, focus) => {
+    openForm("meters", byId("meters", id));
+    if (focus) setTimeout(() => { const v = $("#rd_value"); if (v) { v.scrollIntoView({ block: "center" }); v.focus(); } }, 220);
+  };
+  bindCards("[data-meter]", (c) => openMeter(c.dataset.meter, false));
+  $("#view").querySelectorAll("[data-read]").forEach((b) => (b.onclick = () => openMeter(b.dataset.read, true)));
 }
 
 // ---------------------------------------------------------------- Rent Control: reminders
@@ -1403,11 +1929,13 @@ function renderReminders() {
     <div class="card"><div class="card-head"><h3>Open items (${list.length})</h3><span class="muted">calculated from leases, payments, settlements and your reminders</span></div>
       <div class="card-body alerts">${list.length ? list.map(reminderHtml).join("") : '<div class="empty">Nothing to do – all payments are up to date.</div>'}</div></div>
     <div class="card"><div class="card-head"><h3>Your reminders (${manual.length})</h3></div>
-      <div class="table-wrap">${manual.length ? `<table><thead><tr>${ENTITIES.reminders.columns.map((c) => `<th class="${c.num ? "num" : ""}">${c.label}</th>`).join("")}</tr></thead>
-        <tbody>${manual.map((r) => `<tr class="clickable" data-id="${r.id}">${ENTITIES.reminders.columns.map((c) => `<td class="${c.num ? "num" : ""}">${c.value(r)}</td>`).join("")}</tr>`).join("")}</tbody></table>`
+      <div class="card-body">${manual.length ? `<div class="cgrid">${manual.map((r) => ucard({ title: esc(r.title),
+          metas: [r.kind === "settlement" ? "Before utility settlement" : `On ${fmtDate(r.due_date)}`, r.unit_id ? metaKV("Unit", esc(unitLabel(byId("units", r.unit_id)))) : "", r.notes ? esc(r.notes) : ""],
+          side: `${r.amount ? `<strong>${fmtMoney(r.amount)}</strong>` : ""}${r.done ? '<span class="pill grey">done</span>' : '<span class="pill free">open</span>'}`,
+          attrs: `data-id="${r.id}"`, cls: r.done ? "minor" : "" })).join("")}</div>`
         : '<div class="empty">No manual reminders yet.</div>'}</div></div>`;
   bindReminderButtons(list);
-  $("#view").querySelectorAll("tr[data-id]").forEach((tr) => (tr.onclick = () => openForm("reminders", byId("reminders", tr.dataset.id))));
+  bindCards("[data-id]", (c) => openForm("reminders", byId("reminders", c.dataset.id)));
 }
 
 // ---------------------------------------------------------------- Rent Control: payments grid
@@ -1483,6 +2011,192 @@ function renderPayments() {
   };
 }
 
+
+// ---------------------------------------------------------------- card helper (all overview pages)
+/** a card: title + optional sub line, meta items, right-hand side (amount / pill), extra body and actions */
+function ucard({ title, sub = "", metas = [], side = "", body = "", actions = "", color = "", attrs = "", cls = "", chevron = true }) {
+  const m = metas.filter((x) => x && String(x).replace(/<[^>]+>/g, "").trim());
+  return `<div class="mcard ucard ${cls}" tabindex="0" role="button" ${attrs}${color ? ` style="--uc:${color}"` : ""}>
+    <div class="mc-main"><div class="mc-title">${title}</div>${sub ? `<div class="mc-sub2">${sub}</div>` : ""}
+      ${m.length ? `<div class="mc-metas">${m.map((x) => `<span class="mc-meta">${x}</span>`).join("")}</div>` : ""}${body}
+      ${actions ? `<div class="mc-actions">${actions}</div>` : ""}</div>
+    ${side ? `<div class="mc-side">${side}</div>` : ""}${chevron ? icon("chevronRight", 18) : ""}</div>`;
+}
+const metaKV = (label, value) => (value == null || value === "" || value === "–" ? "" : `<em>${esc(label)}</em> ${value}`);
+const sectionHead = (b, right = "") => `<div class="m-section">${icon("building", 16)} <span>${esc(buildingShort(b))}</span>${right ? `<span class="m-section-r">${right}</span>` : ""}</div>`;
+/** click/Enter on a card (inner buttons and links keep their own action) */
+function bindCards(sel, fn, root = $("#view")) {
+  root.querySelectorAll(sel).forEach((c) => {
+    const go = (e) => { if (e.target.closest("button, a, input, label, select")) return; fn(c, e); };
+    c.onclick = go; c.onkeydown = (e) => { if (e.key === "Enter") go(e); };
+  });
+}
+
+// ---------------------------------------------------------------- Rent Control: By Tenant / By Unit (cards, phone-first)
+const PAY_LABEL = { ok: "paid", partial: "partly paid", overdue: "overdue", pending: "due soon", extra: "extra payment", none: "–" };
+const STATE_RANK = { overdue: 5, partial: 4, pending: 3, extra: 2, ok: 1, none: 0 };
+/** combined state of base rent + prepayments for one month */
+function monthState(l, ym) {
+  const states = ["rent", "service"].map((c) => cellState(l, ym, c));
+  return states.reduce((a, s) => (STATE_RANK[s] > STATE_RANK[a] ? s : a), "none");
+}
+const leaseArrears = (l) => round2(sum(rentArrears(l), (a) => a.missing));
+
+function leasePayCard(l, title, sub, { noTenant = false } = {}) {
+  const ym = thisMonth(), s = monthState(l, ym), arrears = leaseArrears(l);
+  const months = monthsBetween(addMonths(ym, -5), ym).filter((m) => leaseActiveInMonth(l, m) || paid(l, m, "rent") || paid(l, m, "service"));
+  return `<div class="pcard${arrears > 0 ? " late" : ""}" data-lease="${l.id}">
+    <div class="pc-top">
+      <div class="pc-who"><div class="pc-title">${title}</div><div class="muted">${sub}</div></div>
+      <div class="pc-amt"><strong>${fmtMoney(leaseTotal(l))}</strong><span class="muted">/ month</span></div>
+    </div>
+    <div class="pc-status"><span class="pc ${s} pc-pill">${fmtMonth(ym)}: ${PAY_LABEL[s]}</span>${arrears > 0 ? `<span class="pill danger">${icon("alert", 14)} Arrears ${fmtMoney(arrears)}</span>` : ""}</div>
+    <div class="pc-months">${months.map((m) => { const ms = monthState(l, m), got = paid(l, m, "rent") + paid(l, m, "service");
+      return `<button type="button" class="mchip pc ${ms}" data-ym="${m}" title="${esc(fmtMonth(m) + " – " + PAY_LABEL[ms])}"><span>${MONTHS[Number(m.slice(5)) - 1]}</span><b>${got ? fmtAmt(round2(got)) : ms === "overdue" ? "!" : "·"}</b></button>`; }).join("")}</div>
+    <div class="pc-actions">
+      <button type="button" class="btn small primary" data-act="record">${icon("banknote", 16)} Record</button>
+      ${noTenant ? "" : `<button type="button" class="btn small" data-act="tenant">${icon("user", 16)} Tenant</button>`}
+      <button type="button" class="btn small" data-act="lease">${icon("file", 16)} Lease</button>
+    </div>
+  </div>`;
+}
+
+function bindPayCards(root = $("#view")) {
+  root.querySelectorAll(".pcard[data-lease]").forEach((c) => {
+    const l = byId("leases", c.dataset.lease);
+    c.querySelectorAll(".mchip").forEach((b) => (b.onclick = () => openRecordMonth(l, b.dataset.ym)));
+    c.querySelector('[data-act="record"]').onclick = () => openRecordMonth(l);
+    const tb = c.querySelector('[data-act="tenant"]'); if (tb) tb.onclick = () => (location.hash = `#/admin/tenants/${l.tenant_id}`);
+    c.querySelector('[data-act="lease"]').onclick = () => openForm("leases", l);
+  });
+}
+
+function renderRentCards(mode) {
+  const st = (pageState["rc_" + mode] ||= { building: "", open: false });
+  $("#topActions").innerHTML = `<div class="filters">${buildingFilterHtml(st)}
+    <label class="toggle"><input type="checkbox" id="onlyOpen" ${st.open ? "checked" : ""}> Only open / arrears</label></div>`;
+  bindBuildingFilter(st, () => renderRentCards(mode));
+  $("#onlyOpen").onchange = (e) => { st.open = e.target.checked; renderRentCards(mode); };
+  if (!db.leases.length) { $("#view").innerHTML = emptyHint("No leases yet – rent control is based on them.", "admin/leases", "Add leases"); return; }
+
+  const ym = thisMonth();
+  const inBuilding = (u) => u && (!st.building || u.building_id === Number(st.building));
+  const relevant = db.leases.filter((l) => inBuilding(byId("units", l.unit_id)) && (leaseActiveInMonth(l, ym) || leaseArrears(l) > 0));
+  const isOpen = (l) => leaseArrears(l) > 0 || ["overdue", "partial"].includes(monthState(l, ym));
+  const shown = relevant.filter((l) => !st.open || isOpen(l));
+  const expM = sum(relevant.filter((l) => leaseActiveInMonth(l, ym)), (l) => expected(l, ym, "rent") + expected(l, ym, "service"));
+  const gotM = sum(relevant, (l) => paid(l, ym, "rent") + paid(l, ym, "service"));
+  const arrears = round2(sum(relevant, leaseArrears));
+  const kpis = `<div class="kpis compact">
+    <div class="kpi kpi-blue"><div class="kpi-label">Received ${fmtMonth(ym)}</div><div class="kpi-value">${fmtMoney(gotM)}</div><div class="kpi-sub">of ${fmtMoney(expM)} expected</div></div>
+    <div class="kpi"><div class="kpi-label">Arrears</div><div class="kpi-value ${arrears > 0 ? "neg" : ""}">${fmtMoney(arrears)}</div><div class="kpi-sub">${relevant.filter(isOpen).length} lease(s) open</div></div>
+  </div>`;
+
+  let body = "";
+  if (mode === "tenant") {
+    const name = (l) => tenantName(byId("tenants", l.tenant_id));
+    body = [...shown].sort((a, b) => name(a).localeCompare(name(b)) || cmpLeasesByUnit(a, b))
+      .map((l) => leasePayCard(l, esc(name(l)), `${icon("home", 14)} ${esc(unitLabel(byId("units", l.unit_id)))}`)).join("");
+    if (!body) body = `<div class="card"><div class="empty">${st.open ? "Nothing open – all tenants have paid." : "No active leases."}</div></div>`;
+  } else {
+    body = filterBuildings(st).map((b) => {
+      const cards = orderedUnits(b.id).map((u) => {
+        const ls = shown.filter((l) => l.unit_id === u.id).sort((x, y) => y.start_date.localeCompare(x.start_date));
+        if (ls.length) return ls.map((l) => leasePayCard(l, `${esc(u.code)} <span class="muted">${esc(u.unit_type || "")}</span>`, `${icon("user", 14)} ${esc(tenantName(byId("tenants", l.tenant_id)))}`)).join("");
+        if (st.open || !RENTABLE.includes(u.unit_type) || ownerUnits(u).length) return "";
+        return `<div class="pcard vacant"><div class="pc-top"><div class="pc-who"><div class="pc-title">${esc(u.code)} <span class="muted">${esc(u.unit_type || "")}</span></div><div class="muted">no tenant</div></div>${statusPill(u)}</div></div>`;
+      }).join("");
+      return cards ? `<div class="m-section">${icon("building", 16)} ${esc(buildingShort(b))}</div>${cards}` : "";
+    }).join("") || `<div class="card"><div class="empty">${st.open ? "Nothing open – all units are paid up." : "No units."}</div></div>`;
+  }
+  $("#view").innerHTML = `${kpis}<div class="pcards">${body}</div>
+    <div class="legend"><span class="pc ok">paid</span><span class="pc partial">partly paid</span><span class="pc overdue">overdue</span><span class="pc pending">due soon</span>
+      <span class="muted">Tap a month to record or correct its payments.</span></div>`;
+  bindPayCards();
+}
+
+// ---------------------------------------------------------------- Data Setup → Tenants → Tenant Details
+function renderTenantDetail(id) {
+  const t = byId("tenants", id);
+  if (!t) { location.hash = "#/admin/tenants"; return; }
+  const st = (pageState.tenantDetail ||= { tab: "info" });
+  $("#title").textContent = tenantName(t);
+  $("#topActions").innerHTML = `<button class="btn" id="editTenant">${icon("user", 18)} Edit tenant</button>`;
+  $("#editTenant").onclick = () => openForm("tenants", t);
+
+  const now = today();
+  const leases = db.leases.filter((l) => l.tenant_id === t.id).sort((a, b) => (leaseActiveOn(b, now) - leaseActiveOn(a, now)) || b.start_date.localeCompare(a.start_date));
+  const active = leases.filter((l) => leaseActiveOn(l, now));
+  const focus = active.length ? active : leases.slice(0, 1); // ended tenant: show the last lease's unit
+  const unitIds = new Set(focus.map((l) => l.unit_id));
+  db.units.forEach((u) => { if (ownerUnits(u).some((o) => unitIds.has(o.id))) unitIds.add(u.id); }); // cellar, parking … of the flat
+  const meters = db.meters.filter((m) => unitIds.has(m.unit_id)).sort((a, b) => cmpUnits(byId("units", a.unit_id), byId("units", b.unit_id)) || a.meter_type.localeCompare(b.meter_type));
+  const docs = db.documents.filter((d) => d.status !== "Template" && (d.tenant_id === t.id || leases.some((l) => l.id === d.lease_id)))
+    .sort((a, b) => (b.doc_date || "").localeCompare(a.doc_date || ""));
+  const files = attachmentsOf("tenants", t.id);
+  const monthly = sum(active, leaseTotal), arrears = round2(sum(leases, leaseArrears));
+
+  const tabs = [["info", "Name & rent"], ["meters", `Meters (${meters.length})`], ["docs", `Documents (${docs.length + files.length})`]];
+  const tabBar = `<div class="seg tabs">${tabs.map(([k, label]) => `<button type="button" class="seg-btn ${st.tab === k ? "active" : ""}" data-tab="${k}">${label}</button>`).join("")}</div>`;
+  const row = (label, value) => (value ? `<div class="kv"><span>${label}</span><span>${value}</span></div>` : "");
+  const address = [t.street, [t.zip, t.city].filter(Boolean).join(" ")].filter(Boolean).join(", ");
+
+  let content = "";
+  if (st.tab === "info") {
+    content = `
+      <div class="kpis compact">
+        <div class="kpi kpi-green"><div class="kpi-label">Rent per month</div><div class="kpi-value">${fmtMoney(monthly)}</div><div class="kpi-sub">${active.length ? `${active.length} active lease(s)` : "no active lease"}</div></div>
+        <div class="kpi"><div class="kpi-label">Arrears</div><div class="kpi-value ${arrears > 0 ? "neg" : ""}">${fmtMoney(arrears)}</div><div class="kpi-sub">${arrears > 0 ? "rent / prepayments missing" : "nothing outstanding"}</div></div>
+      </div>
+      <div class="card"><div class="card-head"><h3>${icon("user", 18)} Contact</h3></div><div class="card-body kvs">
+        ${row("Name", `<strong>${esc(tenantName(t))}</strong>`)}
+        ${row("Co-tenant", esc(t.co_tenant || ""))}
+        ${row("Phone", t.phone ? `<a class="link" href="tel:${esc(t.phone.replace(/[^\d+]/g, ""))}">${esc(t.phone)}</a>` : "")}
+        ${row("Email", t.email ? `<a class="link" href="mailto:${esc(t.email)}">${esc(t.email)}</a>` : "")}
+        ${row("Address", esc(address))}
+        ${row("IBAN", esc(t.iban || ""))}
+        ${row("Notes", esc(t.notes || ""))}
+      </div></div>
+      <div class="card"><div class="card-head"><h3>${icon("file", 18)} Assigned leases</h3><button class="btn small" id="addLease">${icon("plus", 16)} Lease</button></div>
+        <div class="card-body">${leases.length ? `<div class="pcards">${leases.map((l) => leaseActiveOn(l, now) || leaseArrears(l) > 0
+          ? leasePayCard(l, esc(unitLabel(byId("units", l.unit_id))), `since ${fmtDate(l.start_date)}${l.end_date ? " · until " + fmtDate(l.end_date) : ""} · base rent ${fmtMoney(l.cold_rent)}`, { noTenant: true })
+          : `<button type="button" class="mcard" data-lease-open="${l.id}"><div class="mc-main"><div class="mc-title">${esc(unitLabel(byId("units", l.unit_id)))}</div>
+              <div class="mc-metas"><span class="mc-meta">${fmtDate(l.start_date)} – ${fmtDate(l.end_date)}</span><span class="mc-meta">${fmtMoney(leaseTotal(l))} / month</span>${leaseStatus(l)}</div></div>${icon("chevronRight", 18)}</button>`).join("")}</div>`
+          : '<div class="empty">No lease assigned yet.</div>'}</div></div>`;
+  } else if (st.tab === "meters") {
+    content = `<div class="card"><div class="card-head"><h3>${icon("gauge", 18)} Assigned meters</h3><span class="muted">${focus.length ? esc([...unitIds].map((u) => byId("units", u)?.code).filter(Boolean).join(", ")) : ""}</span></div>
+      <div class="card-body">${meters.length ? `<div class="mlist">${meters.map((m) => { const r = lastReading(m), u = byId("units", m.unit_id);
+        return `<button type="button" class="mcard" data-meter="${m.id}" style="--uc:${unitColor(u?.building_id, m.unit_id)}"><div class="mc-main">
+          <div class="mc-title">${meterIcon(m.meter_type)}${esc(m.meter_type)} ${m.number ? `<strong>${esc(m.number)}</strong>` : '<span class="pill free">no number</span>'}</div>
+          <div class="mc-metas"><span class="mc-meta"><em>Unit</em> ${esc(u?.code || "")}</span>${m.location ? `<span class="mc-meta"><em>Location</em> ${esc(m.location)}</span>` : ""}
+          <span class="mc-meta"><em>Last reading</em> ${r ? `${fmtNum(r.value)} ${esc(m.measure_unit || "")} · ${fmtDate(r.reading_date)}` : "–"}</span>${m.active ? "" : '<span class="pill grey">inactive</span>'}</div></div>${icon("chevronRight", 18)}</button>`; }).join("")}</div>`
+        : `<div class="empty">No meters assigned to ${focus.length ? "this tenant's unit" : "this tenant"}.</div>`}</div></div>`;
+  } else {
+    const l0 = focus[0], u0 = l0 && byId("units", l0.unit_id);
+    content = `<div class="card"><div class="card-head"><h3>${icon("folder", 18)} Documents</h3><button class="btn small" id="addDoc">${icon("plus", 16)} Document</button></div>
+      <div class="card-body">${docs.length ? `<div class="mlist">${docs.map((d) => { const n = attachmentsOf("documents", d.id).length;
+        return `<button type="button" class="mcard" data-doc="${d.id}"><div class="mc-main"><div class="mc-title">${esc(docShort(d.doc_type))}${d.title ? ` <span class="muted">${esc(d.title)}</span>` : ""}</div>
+          <div class="mc-metas">${d.doc_date ? `<span class="mc-meta">${fmtDate(d.doc_date)}</span>` : ""}${d.phase ? `<span class="mc-meta">${esc(d.phase)}</span>` : ""}${docStatusPill(d.status)}<span class="mc-meta">${icon("paperclip", 14)} ${n || "no file"}</span></div></div>${icon("chevronRight", 18)}</button>`; }).join("")}</div>`
+        : '<div class="empty">No documents for this tenant yet.</div>'}
+      ${l0 ? generateBar(l0) : ""}</div></div>
+      <div class="card"><div class="card-head"><h3>${icon("paperclip", 18)} Files on the tenant</h3><span class="muted">ID copies, self-disclosure …</span></div>
+        <div class="card-body">${attachmentsBlock("tenants", t)}</div></div>`;
+    setTimeout(() => {
+      const ad = $("#addDoc");
+      if (ad) ad.onclick = () => openForm("documents", null, { building_id: u0?.building_id, unit_id: l0?.unit_id, lease_id: l0?.id, tenant_id: t.id, status: "Draft" });
+    });
+  }
+
+  $("#view").innerHTML = `<div class="tenant-detail">${tabBar}${content}</div>`;
+  $("#view").querySelectorAll("[data-tab]").forEach((b) => (b.onclick = () => { st.tab = b.dataset.tab; renderTenantDetail(id); }));
+  bindPayCards();
+  $("#view").querySelectorAll("[data-lease-open]").forEach((b) => (b.onclick = () => openForm("leases", byId("leases", b.dataset.leaseOpen))));
+  $("#view").querySelectorAll("[data-meter]").forEach((b) => (b.onclick = () => openForm("meters", byId("meters", b.dataset.meter))));
+  $("#view").querySelectorAll("[data-doc]").forEach((b) => (b.onclick = () => openForm("documents", byId("documents", b.dataset.doc))));
+  const al = $("#addLease"); if (al) al.onclick = () => openForm("leases", null, { tenant_id: t.id });
+  if (st.tab === "docs") { bindAttachments($("#view"), () => render()); bindGenButtons($("#view")); hydrateAttachments($("#view")); }
+}
+
 function openPayment(l, ym, cat) {
   const existing = paymentRow(l, ym, cat);
   if (existing) return openForm("payments", existing);
@@ -1555,6 +2269,27 @@ function settlementInstallmentHint(l, month) {
 }
 
 // ---------------------------------------------------------------- Rent Control: deposits
+function renderChecklists() {
+  const st = (pageState.checklists ||= { all: false });
+  $("#topActions").innerHTML = `<label class="check" style="display:flex"><input type="checkbox" id="cl_all" ${st.all ? "checked" : ""}> Show all leases</label>`;
+  $("#cl_all").onchange = (e) => { st.all = e.target.checked; renderChecklists(); };
+  const leases = (st.all ? [...db.leases] : movingLeases()).sort(cmpLeasesByUnit);
+  const bar = (p) => `<div class="cl-bar" title="${p.done} of ${p.total} done"><span style="width:${Math.round((100 * p.done) / p.total)}%"></span></div><span class="muted">${p.done}/${p.total}</span>`;
+  const nextOpen = (l, ph) => CHECKLIST[ph].flatMap((s) => s.items).find((it) => !checkState(l, ph, it).done);
+  $("#view").innerHTML = `
+    <p class="muted" style="margin:0 0 12px">Moves going on now: leases starting within 60 days or up to 90 days ago, and leases ending within 60 days or up to 180 days ago. Open a lease to tick off the items or add documents.</p>
+    ${leases.length ? `<div class="cgrid">${leases.map((l) => { const ph = currentPhase(l); const nx = nextOpen(l, ph); const u = byId("units", l.unit_id);
+        return ucard({ title: `${esc(unitLabel(u, false))}`, sub: `${icon("user", 14)} ${esc(tenantName(byId("tenants", l.tenant_id)))}`,
+          body: `<div class="cl-rows"><div class="cl-row"><span>Move-in <span class="muted">${fmtDate(l.start_date)}</span></span>${bar(checklistProgress(l, "in"))}</div>
+            ${leaseHasMoveOut(l) ? `<div class="cl-row"><span>Move-out <span class="muted">${fmtDate(l.end_date)}</span></span>${bar(checklistProgress(l, "out"))}</div>` : ""}</div>
+            <div class="cl-next">${nx ? `${icon("arrowRight", 14)} Next: <strong>${esc(nx.label)}</strong>` : '<span class="pill ok">all done</span>'}</div>`,
+          side: `<span class="pill ${ph === "out" ? "free" : "ok"}">${ph === "out" ? "moving out" : "moving in"}</span>`,
+          color: unitColor(u?.building_id, l.unit_id), attrs: `data-lease="${l.id}"` }); }).join("")}</div>`
+      : `<div class="card"><div class="empty">No move-in or move-out going on right now.<br><br><button class="btn" id="cl_show">Show all leases</button></div></div>`}`;
+  bindCards("[data-lease]", (c) => openForm("leases", byId("leases", c.dataset.lease)));
+  const b = $("#cl_show"); if (b) b.onclick = () => { st.all = true; renderChecklists(); };
+}
+
 function renderDeposits() {
   const st = (pageState.dep ||= { building: "" });
   $("#topActions").innerHTML = `<div class="filters">${buildingFilterHtml(st)}</div>`;
@@ -1578,14 +2313,14 @@ function renderDeposits() {
       <div class="kpi"><div class="kpi-label">Deposits agreed (current leases)</div><div class="kpi-value">${fmtMoney(sum(rows, (r) => r.l.deposit))}</div></div>
       <div class="kpi"><div class="kpi-label">Deposits received (recorded)</div><div class="kpi-value">${fmtMoney(totalHeld)}</div><div class="kpi-sub">payments recorded since ${fmtMonth(trackingStart())}</div></div>
     </div>
-    <div class="card"><div class="table-wrap"><table>
-      <thead><tr><th>Unit</th><th>Tenant</th><th>Lease start</th><th class="num">Deposit</th><th>Installments</th><th class="num">Received</th><th>Status</th><th></th></tr></thead>
-      <tbody>${rows.map((r) => `<tr class="clickable" data-lease="${r.l.id}"><td>${esc(unitLabel(byId("units", r.l.unit_id)))}</td><td>${esc(tenantName(byId("tenants", r.l.tenant_id)))}</td><td>${fmtDate(r.l.start_date)}</td>
-        <td class="num">${fmtMoney(r.l.deposit)}</td><td>${r.sched.length > 1 ? r.sched.map((x) => fmtMonth(x.ym)).join(", ") : r.sched.length ? fmtMonth(r.sched[0].ym) : "–"}</td>
-        <td class="num">${fmtMoney(r.got)}</td><td>${r.status}</td><td class="num"><button class="btn small" data-rec="${r.l.id}">${icon("banknote", 16)} Record</button></td></tr>`).join("")}</tbody>
-    </table></div></div>
-    <p class="muted">The deposit amount and the number of installments are set on the lease (Data Admin → Leases). Leases that started before ${fmtMonth(trackingStart())} are not checked.</p>`;
-  $("#view").querySelectorAll("tr[data-lease]").forEach((tr) => (tr.onclick = () => openForm("leases", byId("leases", tr.dataset.lease))));
+    <div class="cgrid">${rows.map((r) => { const u = byId("units", r.l.unit_id);
+      return ucard({ title: esc(unitLabel(u)), sub: `${icon("user", 14)} ${esc(tenantName(byId("tenants", r.l.tenant_id)))} · since ${fmtDate(r.l.start_date)}`,
+        metas: [metaKV("Received", fmtMoney(r.got)), r.sched.length ? metaKV(r.sched.length > 1 ? "Installments" : "Due", r.sched.map((x) => fmtMonth(x.ym)).join(", ")) : ""],
+        side: `<strong>${fmtMoney(r.l.deposit)}</strong>${r.status}`,
+        actions: Number(r.l.deposit) ? `<button type="button" class="btn small" data-rec="${r.l.id}">${icon("banknote", 16)} Record</button>` : "",
+        color: unitColor(u?.building_id, r.l.unit_id), attrs: `data-lease="${r.l.id}"` }); }).join("") || '<div class="card"><div class="empty">No leases.</div></div>'}</div>
+    <p class="muted">The deposit amount and the number of installments are set on the lease (Data Setup → Leases). Leases that started before ${fmtMonth(trackingStart())} are not checked.</p>`;
+  bindCards("[data-lease]", (c) => openForm("leases", byId("leases", c.dataset.lease)));
   $("#view").querySelectorAll("[data-rec]").forEach((b) => (b.onclick = (e) => { e.stopPropagation(); openRecordMonth(byId("leases", b.dataset.rec)); }));
 }
 
@@ -1922,6 +2657,7 @@ async function boot() {
     hideGate();
     Backend.onStatus((st) => {
       $(".sidebar-foot").innerHTML = syncStatusHtml(st);
+      $("#syncMini").innerHTML = syncStatusHtml(st);
       if (st.state === "conflict" && !boot._conflictShown) { boot._conflictShown = true; toast("The data was changed elsewhere – see Settings", true); location.hash = "#/admin/settings"; }
       if (st.state === "saved") boot._conflictShown = false;
     });
@@ -1935,9 +2671,9 @@ async function boot() {
   rentControlCheck({ auto: true }); // reads Rent Control.xlsx only if it changed since the last time
 }
 
-// mobile navigation (menu button in the header)
-$("#menuBtn").innerHTML = icon("menu", 22);
-$("#menuBtn").onclick = () => document.body.classList.toggle("nav-open");
+// header buttons (phones navigate with the bottom tab bar + the chip row of sub-pages)
+$("#backBtn").innerHTML = icon("arrowLeft", 22);
+$("#settingsBtn").innerHTML = icon("settings", 22);
 $("#navBackdrop").onclick = () => document.body.classList.remove("nav-open");
 window.addEventListener("hashchange", () => document.body.classList.remove("nav-open"));
 

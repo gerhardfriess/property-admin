@@ -12,7 +12,7 @@
 const PA_SCHEMA = (() => {
   const TABLES = {
     buildings: [["code", "name", "street", "house_no", "zip", "city", "country", "year_built", "plot_area", "building_type", "notes"], ["code", "street", "city"], ["year_built", "plot_area"]],
-    units: [["building_id", "code", "unit_type", "floor", "area", "rooms", "parent_unit_id", "notes"], ["building_id", "code", "unit_type"], ["building_id", "area", "rooms", "parent_unit_id"]],
+    units: [["building_id", "code", "unit_type", "floor", "area", "rooms", "parent_unit_id", "shared_unit_ids", "doc_label", "notes"], ["building_id", "code", "unit_type"], ["building_id", "area", "rooms", "parent_unit_id"]],
     meters: [["building_id", "unit_id", "meter_type", "number", "measure_unit", "location", "supplier", "active", "notes"], ["building_id", "meter_type"], ["building_id", "unit_id", "active"]],
     meter_readings: [["meter_id", "reading_date", "value", "reading_type", "notes"], ["meter_id", "reading_date", "value"], ["meter_id", "value"]],
     tenants: [["salutation", "first_name", "last_name", "company", "co_tenant", "street", "zip", "city", "phone", "email", "iban", "notes"], [], []],
@@ -21,13 +21,19 @@ const PA_SCHEMA = (() => {
     payments: [["lease_id", "month", "category", "amount", "paid_on", "notes"], ["lease_id", "month", "category", "amount"], ["lease_id", "amount"]],
     settlements: [["lease_id", "period_year", "amount", "issued_on", "first_due_month", "installments", "notes"], ["lease_id", "period_year", "amount", "first_due_month"], ["lease_id", "period_year", "amount", "installments"]],
     reminders: [["unit_id", "lease_id", "kind", "title", "amount", "due_date", "done", "notes"], ["kind", "title"], ["unit_id", "lease_id", "amount", "done"]],
+    unit_rooms: [["unit_id", "name", "base_area", "factor", "area_note", "sort_no"], ["unit_id", "name"], ["unit_id", "base_area", "factor", "sort_no"]],
+    documents: [["building_id", "unit_id", "lease_id", "tenant_id", "doc_type", "phase", "title", "doc_date", "status", "version", "notes"], ["building_id", "doc_type"], ["building_id", "unit_id", "lease_id", "tenant_id"]],
+    keys: [["building_id", "unit_id", "key_type", "key_no", "opens", "quantity", "notes"], ["building_id", "key_type"], ["building_id", "unit_id", "quantity"]],
+    key_handovers: [["lease_id", "key_id", "quantity", "handed_on", "returned_quantity", "returned_on", "notes"], ["lease_id", "key_id", "quantity"], ["lease_id", "key_id", "quantity", "returned_quantity"]],
+    waste_bins: [["building_id", "bin_type", "size_l", "bin_no", "provider", "pickup", "unit_ids", "active", "notes"], ["building_id", "bin_type"], ["building_id", "size_l", "active"]],
+    checklist: [["lease_id", "phase", "item_key", "done", "done_on", "notes"], ["lease_id", "phase", "item_key"], ["lease_id", "done"]],
   };
-  const FLOAT_COLUMNS = new Set(["area", "rooms", "plot_area", "value", "amount", "cold_rent", "service_charge", "heating_charge", "other_charge", "deposit"]);
+  const FLOAT_COLUMNS = new Set(["area", "rooms", "plot_area", "value", "amount", "cold_rent", "service_charge", "heating_charge", "other_charge", "deposit", "base_area", "factor"]);
   const SQL = `
 CREATE TABLE IF NOT EXISTS buildings (id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT NOT NULL UNIQUE, name TEXT, street TEXT NOT NULL, house_no TEXT, zip TEXT,
   city TEXT NOT NULL, country TEXT DEFAULT 'Germany', year_built INTEGER, plot_area REAL, building_type TEXT, notes TEXT);
 CREATE TABLE IF NOT EXISTS units (id INTEGER PRIMARY KEY AUTOINCREMENT, building_id INTEGER NOT NULL REFERENCES buildings(id) ON DELETE RESTRICT,
-  code TEXT NOT NULL, unit_type TEXT NOT NULL, floor TEXT, area REAL, rooms REAL, parent_unit_id INTEGER REFERENCES units(id) ON DELETE SET NULL, notes TEXT, UNIQUE (building_id, code));
+  code TEXT NOT NULL, unit_type TEXT NOT NULL, floor TEXT, area REAL, rooms REAL, parent_unit_id INTEGER REFERENCES units(id) ON DELETE SET NULL, shared_unit_ids TEXT, doc_label TEXT, notes TEXT, UNIQUE (building_id, code));
 CREATE TABLE IF NOT EXISTS meters (id INTEGER PRIMARY KEY AUTOINCREMENT, building_id INTEGER NOT NULL REFERENCES buildings(id) ON DELETE RESTRICT,
   unit_id INTEGER REFERENCES units(id) ON DELETE RESTRICT, meter_type TEXT NOT NULL, number TEXT, measure_unit TEXT, location TEXT, active INTEGER DEFAULT 1, notes TEXT, supplier TEXT);
 CREATE TABLE IF NOT EXISTS meter_readings (id INTEGER PRIMARY KEY AUTOINCREMENT, meter_id INTEGER NOT NULL REFERENCES meters(id) ON DELETE CASCADE,
@@ -43,14 +49,27 @@ CREATE TABLE IF NOT EXISTS settlements (id INTEGER PRIMARY KEY AUTOINCREMENT, le
   period_year INTEGER NOT NULL, amount REAL NOT NULL, issued_on TEXT, first_due_month TEXT NOT NULL, installments INTEGER NOT NULL DEFAULT 1, notes TEXT);
 CREATE TABLE IF NOT EXISTS reminders (id INTEGER PRIMARY KEY AUTOINCREMENT, unit_id INTEGER REFERENCES units(id) ON DELETE CASCADE,
   lease_id INTEGER REFERENCES leases(id) ON DELETE CASCADE, kind TEXT NOT NULL, title TEXT NOT NULL, amount REAL, due_date TEXT, done INTEGER DEFAULT 0, notes TEXT);
+CREATE TABLE IF NOT EXISTS unit_rooms (id INTEGER PRIMARY KEY AUTOINCREMENT, unit_id INTEGER NOT NULL REFERENCES units(id) ON DELETE CASCADE,
+  name TEXT NOT NULL, base_area REAL, factor REAL DEFAULT 1, area_note TEXT, sort_no INTEGER);
+CREATE TABLE IF NOT EXISTS documents (id INTEGER PRIMARY KEY AUTOINCREMENT, building_id INTEGER NOT NULL REFERENCES buildings(id) ON DELETE RESTRICT,
+  unit_id INTEGER REFERENCES units(id) ON DELETE SET NULL, lease_id INTEGER REFERENCES leases(id) ON DELETE SET NULL, tenant_id INTEGER REFERENCES tenants(id) ON DELETE SET NULL,
+  doc_type TEXT NOT NULL, phase TEXT, title TEXT, doc_date TEXT, status TEXT, version TEXT, notes TEXT);
+CREATE TABLE IF NOT EXISTS keys (id INTEGER PRIMARY KEY AUTOINCREMENT, building_id INTEGER NOT NULL REFERENCES buildings(id) ON DELETE RESTRICT,
+  unit_id INTEGER REFERENCES units(id) ON DELETE SET NULL, key_type TEXT NOT NULL, key_no TEXT, opens TEXT, quantity INTEGER, notes TEXT);
+CREATE TABLE IF NOT EXISTS key_handovers (id INTEGER PRIMARY KEY AUTOINCREMENT, lease_id INTEGER NOT NULL REFERENCES leases(id) ON DELETE CASCADE,
+  key_id INTEGER NOT NULL REFERENCES keys(id) ON DELETE CASCADE, quantity INTEGER NOT NULL, handed_on TEXT, returned_quantity INTEGER, returned_on TEXT, notes TEXT);
+CREATE TABLE IF NOT EXISTS waste_bins (id INTEGER PRIMARY KEY AUTOINCREMENT, building_id INTEGER NOT NULL REFERENCES buildings(id) ON DELETE RESTRICT,
+  bin_type TEXT NOT NULL, size_l INTEGER, bin_no TEXT, provider TEXT, pickup TEXT, unit_ids TEXT, active INTEGER DEFAULT 1, notes TEXT);
+CREATE TABLE IF NOT EXISTS checklist (id INTEGER PRIMARY KEY AUTOINCREMENT, lease_id INTEGER NOT NULL REFERENCES leases(id) ON DELETE CASCADE,
+  phase TEXT NOT NULL, item_key TEXT NOT NULL, done INTEGER DEFAULT 0, done_on TEXT, notes TEXT, UNIQUE (lease_id, phase, item_key));
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS attachments (id INTEGER PRIMARY KEY AUTOINCREMENT, entity TEXT NOT NULL, record_id INTEGER NOT NULL, filename TEXT NOT NULL,
   stored_path TEXT NOT NULL, mime TEXT, size INTEGER, caption TEXT, created_at TEXT NOT NULL, taken_at TEXT);
 CREATE INDEX IF NOT EXISTS idx_attachments_record ON attachments (entity, record_id);`;
-  const MIGRATIONS = [["units", "parent_unit_id", "INTEGER REFERENCES units(id) ON DELETE SET NULL"], ["tenants", "co_tenant", "TEXT"], ["leases", "deposit_installments", "INTEGER DEFAULT 1"], ["attachments", "taken_at", "TEXT"], ["meters", "supplier", "TEXT"]];
+  const MIGRATIONS = [["units", "parent_unit_id", "INTEGER REFERENCES units(id) ON DELETE SET NULL"], ["tenants", "co_tenant", "TEXT"], ["leases", "deposit_installments", "INTEGER DEFAULT 1"], ["attachments", "taken_at", "TEXT"], ["meters", "supplier", "TEXT"], ["units", "shared_unit_ids", "TEXT"], ["units", "doc_label", "TEXT"]];
   const DEFAULT_SETTINGS = { tracking_start: "2025-02", rent_grace_days: "5", rent_control_hash: "", rent_control_read: "" };
-  const ATTACHABLE = ["buildings", "units", "meters", "meter_readings", "tenants", "leases", "settlements", "payments"];
-  const ALLOWED_EXT = [".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic", ".pdf"];
+  const ATTACHABLE = ["buildings", "units", "meters", "meter_readings", "tenants", "leases", "settlements", "payments", "documents", "keys", "waste_bins"];
+  const ALLOWED_EXT = [".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic", ".pdf", ".docx", ".doc", ".xlsx", ".odt"];
   return { TABLES, FLOAT_COLUMNS, SQL, MIGRATIONS, DEFAULT_SETTINGS, ATTACHABLE, ALLOWED_EXT, MAX_UPLOAD: 25 * 1024 * 1024 };
 })();
 
@@ -295,6 +314,27 @@ class LocalBackend {
       const r = this._one("SELECT building_id FROM units WHERE id=?", [d.parent_unit_id]);
       if (r && r.building_id !== d.building_id) throw new ApiError(400, "The main unit is located in a different building.");
     }
+    if (table === "units" && d.shared_unit_ids) {
+      const ids = [...new Set((String(d.shared_unit_ids).match(/\d+/g) || []).map(Number))].sort((a, b) => a - b);
+      if (d.id && ids.includes(d.id)) throw new ApiError(400, "A unit cannot be shared with itself.");
+      if (d.parent_unit_id) throw new ApiError(400, "Choose either one main unit or several shared units, not both.");
+      for (const i of ids) {
+        const r = this._one("SELECT building_id FROM units WHERE id=?", [i]);
+        if (r && r.building_id !== d.building_id) throw new ApiError(400, "A shared unit is located in a different building.");
+      }
+      d.shared_unit_ids = ids.join(",") || null;
+    }
+    if (table === "waste_bins") {
+      for (const i of (String(d.unit_ids || "").match(/\d+/g) || []).map(Number)) {
+        const r = this._one("SELECT building_id FROM units WHERE id=?", [i]);
+        if (r && r.building_id !== d.building_id) throw new ApiError(400, "A selected unit is located in a different building.");
+      }
+    }
+    if ((table === "documents" || table === "keys") && d.unit_id) {
+      const r = this._one("SELECT building_id FROM units WHERE id=?", [d.unit_id]);
+      if (r && d.building_id && r.building_id !== d.building_id) throw new ApiError(400, "The selected unit does not belong to the selected building.");
+    }
+    if (table === "key_handovers" && d.returned_quantity && d.quantity && d.returned_quantity > d.quantity) throw new ApiError(400, "More keys returned than handed over.");
     if (table === "meters" && d.unit_id) {
       const r = this._one("SELECT building_id FROM units WHERE id=?", [d.unit_id]);
       if (r && d.building_id && r.building_id !== d.building_id) throw new ApiError(400, "The selected unit does not belong to the selected building.");
@@ -359,7 +399,7 @@ class LocalBackend {
     const rel = meterFile ? this._meterFileName(entity, Number(recordId), ext, takenAt) : `${entity}/${recordId}/${stamp}_${rand}_${safe}`;
     if (meterFile) safe = rel.split("/").pop();
     await this.store.putFile("files/" + rel, blob);
-    const mime = blob.type || ({ ".pdf": "application/pdf", ".png": "image/png", ".gif": "image/gif", ".webp": "image/webp", ".heic": "image/heic" }[ext] || "image/jpeg");
+    const mime = blob.type || ({ ".pdf": "application/pdf", ".png": "image/png", ".gif": "image/gif", ".webp": "image/webp", ".heic": "image/heic", ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document", ".doc": "application/msword", ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", ".odt": "application/vnd.oasis.opendocument.text" }[ext] || "image/jpeg");
     this._run("INSERT INTO attachments (entity, record_id, filename, stored_path, mime, size, caption, created_at, taken_at) VALUES (?,?,?,?,?,?,?,?,?)",
       [entity, Number(recordId), safe, rel, mime, blob.size, caption || null, new Date().toISOString().slice(0, 19), takenAt]);
     const row = this._one("SELECT * FROM attachments WHERE id=?", [this._lastId()]);

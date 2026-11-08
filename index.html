@@ -30,15 +30,19 @@
     <div class="nav-backdrop" id="navBackdrop"></div>
     <main class="main">
       <header class="topbar">
-        <button class="icon-btn menu-btn" id="menuBtn" title="Menu" aria-label="Menu"></button>
+        <button class="icon-btn back-btn" id="backBtn" title="Back" aria-label="Back" hidden></button>
+        <a class="m-brand" href="#/home" title="Start page" aria-label="Start page"><svg viewBox="0 0 24 24" class="brand-icon"><path d="M3 10.5 12 3l9 7.5V21h-6v-6H9v6H3z"/></svg></a>
         <div class="topbar-title">
           <div class="crumb" id="crumb"></div>
           <h1 id="title"></h1>
         </div>
+        <div class="m-tools"><span id="syncMini"></span><a class="icon-btn" id="settingsBtn" href="#/admin/settings" title="Settings" aria-label="Settings"></a></div>
         <div class="top-actions" id="topActions"></div>
+        <nav class="subnav" id="subnav" aria-label="Sub-pages"></nav>
       </header>
       <section id="view" class="view"></section>
     </main>
+    <nav class="tabbar" id="tabbar" aria-label="Sections"></nav>
   </div>
 
   <div class="drawer-backdrop" id="backdrop"></div>
