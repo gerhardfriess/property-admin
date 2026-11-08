@@ -376,10 +376,11 @@ function cellState(l, ym, cat) {
   const exp = expected(l, ym, cat), got = paid(l, ym, cat);
   if (cat === "settlement" || cat === "deposit") {
     // installment plans are reconciled cumulatively (payments may come later or earlier)
+    const dueUpTo = sum(scheduleFor(l, cat).filter((x) => x.ym <= ym), (x) => x.amount);
     if (!exp && !got) return "none";
-    if (!exp) return "extra";
-    const settledUpTo = round2(paidTotal(l, cat, ym) - sum(scheduleFor(l, cat).filter((x) => x.ym <= ym), (x) => x.amount));
-    if (settledUpTo >= -0.009) return "ok";
+    // catch-up payment of an earlier amount: "partly paid" (yellow) until everything due is paid, then green
+    if (!exp) return paidTotal(l, cat, ym) <= dueUpTo + 0.009 ? (paidTotal(l, cat) >= dueUpTo - 0.009 ? "ok" : "partial") : "extra";
+    if (paidTotal(l, cat) >= dueUpTo - 0.009) return "ok"; // covered – in this month, earlier or by later payments
     return isDue(l, ym) ? "overdue" : "pending";
   }
   if (!exp && !got) return "none";
@@ -1941,8 +1942,10 @@ function renderPayments() {
   const cell = (l, ym, c) => {
     const s = cellState(l, ym, c);
     const got = paid(l, ym, c), exp = expected(l, ym, c);
-    const tip = `${CATEGORIES[c]} ${fmtMonth(ym)} – expected ${fmtMoney(exp)}, received ${fmtMoney(got)}`;
-    const txt = got ? fmtAmt(got) : s === "overdue" ? "!" : s === "none" ? "" : "·";
+    const later = s === "ok" && exp && got < exp - 0.009; // installment settled by payments in other months
+    const open = c === "settlement" || c === "deposit" ? cumulativeOutstanding(l, c, "9999-12") : 0;
+    const tip = `${CATEGORIES[c]} ${fmtMonth(ym)} – expected ${fmtMoney(exp)}, received ${fmtMoney(got)}${later ? " (settled by payments in other months)" : ""}${s === "partial" && !exp && open > 0.009 ? ` – catch-up payment, still open ${fmtMoney(open)}` : ""}`;
+    const txt = got ? fmtAmt(got) : s === "overdue" ? "!" : later ? "✓" : s === "none" ? "" : "·";
     return `<td class="pc ${s}" title="${esc(tip)}" data-l="${l.id}" data-ym="${ym}" data-c="${c}">${txt}</td>`;
   };
 
